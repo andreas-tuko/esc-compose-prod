@@ -1,0 +1,111 @@
+services:
+
+  redis:
+    image: redis:8-alpine3.21
+    restart: unless-stopped
+    command: [ "redis-server", "--appendonly", "yes" ]
+    volumes:
+      - redis_data:/data
+    networks:
+      - backend
+    healthcheck:
+      test: [ "CMD", "redis-cli", "ping" ]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+      start_period: 5s
+
+  web:
+    image: andreastuko/esc:latest
+    container_name: esc_web
+    restart: unless-stopped
+    env_file:
+      - .env.docker
+    depends_on:
+      redis:
+        condition: service_healthy
+    networks:
+      - backend
+    command: [ "./build.sh" ]
+    ports:
+      - "8006:8000"
+    volumes:
+      - logs_data:/app/logs
+      - geoip:/app/geoip  # Shared persistent volume
+    healthcheck:
+      test: [ "CMD", "python3", "./docker-health-check.py" ]
+      interval: 30s
+      timeout: 120s
+      retries: 5
+      start_period: 240s
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+        labels: "service=django,environment=production"
+    labels:
+      # Middleware to preserve Cloudflare headers
+      - traefik.http.middlewares.cloudflare-headers.headers.customrequestheaders.CF-Connecting-IP=
+      - traefik.http.middlewares.cloudflare-headers.headers.customrequestheaders.CF-IPCountry=
+      - traefik.http.middlewares.cloudflare-headers.headers.customrequestheaders.CF-RAY=
+      - traefik.http.middlewares.cloudflare-headers.headers.customrequestheaders.CF-Bot-Management-Score=
+      - traefik.http.middlewares.cloudflare-headers.headers.customrequestheaders.X-Forwarded-For=
+      - traefik.http.middlewares.cloudflare-headers.headers.customrequestheaders.X-Forwarded-Proto=
+      - traefik.http.middlewares.cloudflare-headers.headers.customrequestheaders.X-Forwarded-Host=
+      - traefik.http.services.esc-web.loadbalancer.passhostheader=true
+
+  celery_worker:
+    image: andreastuko/esc:latest
+    container_name: esc_worker
+    restart: unless-stopped
+    command: celery -A esc worker --loglevel=info --concurrency=1
+    volumes:
+      - logs_data:/app/logs
+      - geoip:/app/geoip  # Same shared volume
+    env_file:
+      - .env.docker
+    depends_on:
+      web:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: [ "CMD-SHELL", "celery -A esc inspect ping -d celery@$${HOSTNAME} || exit 1" ]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 300s
+    networks:
+      - backend
+
+  celery_beat:
+    image: andreastuko/esc:latest
+    container_name: esc_beat
+    restart: unless-stopped
+    command: celery -A esc beat -l info
+    volumes:
+      - logs_data:/app/logs
+      - geoip:/app/geoip  # Same shared volume
+    env_file:
+      - .env.docker
+    depends_on:
+      web:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      celery_worker:
+        condition: service_healthy
+    networks:
+      - backend
+
+volumes:
+  redis_data:
+  logs_data:
+  geoip:  # Persistent volume - survives container restarts
+
+networks:
+  backend:
+    driver: bridge
+
+# docker pull andreastuko/esc:latest && docker compose -f compose.prod.yaml up
