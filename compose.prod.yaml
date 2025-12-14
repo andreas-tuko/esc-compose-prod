@@ -44,16 +44,6 @@ services:
         max-size: "10m"
         max-file: "3"
         labels: "service=django,environment=production"
-    labels:
-      # Middleware to preserve Cloudflare headers
-      - traefik.http.middlewares.cloudflare-headers.headers.customrequestheaders.CF-Connecting-IP=
-      - traefik.http.middlewares.cloudflare-headers.headers.customrequestheaders.CF-IPCountry=
-      - traefik.http.middlewares.cloudflare-headers.headers.customrequestheaders.CF-RAY=
-      - traefik.http.middlewares.cloudflare-headers.headers.customrequestheaders.CF-Bot-Management-Score=
-      - traefik.http.middlewares.cloudflare-headers.headers.customrequestheaders.X-Forwarded-For=
-      - traefik.http.middlewares.cloudflare-headers.headers.customrequestheaders.X-Forwarded-Proto=
-      - traefik.http.middlewares.cloudflare-headers.headers.customrequestheaders.X-Forwarded-Host=
-      - traefik.http.services.esc-web.loadbalancer.passhostheader=true
 
   celery_worker:
     image: andreastuko/esc:latest
