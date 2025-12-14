@@ -59,7 +59,7 @@ services:
     image: andreastuko/esc:latest
     container_name: esc_worker
     restart: always
-    command: celery -A esc worker --loglevel=info --concurrency=1
+    command: celery -A esc worker --loglevel=info --concurrency=4 --prefetch-multiplier=1
     volumes:
       - logs_data:/app/logs
       - geoip:/app/geoip  # Same shared volume
