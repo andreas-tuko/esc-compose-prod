@@ -1,58 +1,59 @@
 services:
-
   redis:
     image: redis:8-alpine3.21
-    restart: always
-    command: [ "redis-server", "--appendonly", "yes" ]
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes"]
     volumes:
       - redis_data:/data
-    networks:
-      - backend
     healthcheck:
-      test: [ "CMD", "redis-cli", "ping" ]
+      test: ["CMD", "redis-cli", "ping"]
       interval: 10s
       timeout: 3s
       retries: 3
       start_period: 5s
+    security_opt:
+      - no-new-privileges:true
 
   web:
     image: andreastuko/esc:latest
-    container_name: esc_web
-    restart: always
+    restart: unless-stopped
     env_file:
       - .env.docker
     depends_on:
       redis:
         condition: service_healthy
-    networks:
-      - backend
-    command: [ "./build.sh" ]
+    command: ["./build.sh"]
     ports:
-      - "8006:8000"
+      - "8006:8000" # safe: only web is exposed
     volumes:
       - logs_data:/app/logs
-      - geoip:/app/geoip  # Shared persistent volume
+      - geoip:/app/geoip
     healthcheck:
-      test: [ "CMD", "python3", "./docker-health-check.py" ]
+      test: ["CMD", "python3", "./docker-health-check.py"]
       interval: 30s
       timeout: 120s
       retries: 5
       start_period: 240s
     logging:
-      driver: "json-file"
+      driver: json-file
       options:
         max-size: "10m"
         max-file: "3"
-        labels: "service=django,environment=production"
+    labels:
+      service: web
+      role: api
+      environment: production
+    security_opt:
+      - no-new-privileges:true
 
   celery_worker:
     image: andreastuko/esc:latest
-    container_name: esc_worker
-    restart: always
-    command: celery -A esc worker --loglevel=info --concurrency=4 --prefetch-multiplier=1
-    volumes:
-      - logs_data:/app/logs
-      - geoip:/app/geoip  # Same shared volume
+    restart: unless-stopped
+    command: >
+      celery -A esc worker
+      --loglevel=info
+      --concurrency=4
+      --prefetch-multiplier=1
     env_file:
       - .env.docker
     depends_on:
@@ -60,23 +61,30 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+    volumes:
+      - logs_data:/app/logs
+      - geoip:/app/geoip
     healthcheck:
-      test: [ "CMD-SHELL", "celery -A esc inspect ping -d celery@$${HOSTNAME} || exit 1" ]
+      test:
+        [
+          "CMD-SHELL",
+          "celery -A esc inspect ping -d celery@$${HOSTNAME} || exit 1"
+        ]
       interval: 30s
       timeout: 10s
       retries: 3
       start_period: 300s
-    networks:
-      - backend
+    labels:
+      service: celery
+      role: worker
+      environment: production
+    security_opt:
+      - no-new-privileges:true
 
   celery_beat:
     image: andreastuko/esc:latest
-    container_name: esc_beat
-    restart: always
+    restart: unless-stopped
     command: celery -A esc beat -l info
-    volumes:
-      - logs_data:/app/logs
-      - geoip:/app/geoip  # Same shared volume
     env_file:
       - .env.docker
     depends_on:
@@ -86,16 +94,21 @@ services:
         condition: service_healthy
       celery_worker:
         condition: service_healthy
-    networks:
-      - backend
+    volumes:
+      - logs_data:/app/logs
+      - geoip:/app/geoip
+    labels:
+      service: celery
+      role: beat
+      environment: production
+    security_opt:
+      - no-new-privileges:true
 
 volumes:
   redis_data:
   logs_data:
-  geoip:  # Persistent volume - survives container restarts
+  geoip:
 
-networks:
-  backend:
-    driver: bridge
 
 # docker pull andreastuko/esc:latest && docker compose -f compose.prod.yaml up
+ 
