@@ -23,8 +23,9 @@ services:
       redis:
         condition: service_healthy
     command: ["./build.sh"]
-    expose:
-      - "8000"
+    ports:
+      - "127.0.0.1:8000:8000"  # Only bind to localhost for security
+
     volumes:
       - logs_data:/app/logs
       - geoip:/app/geoip
