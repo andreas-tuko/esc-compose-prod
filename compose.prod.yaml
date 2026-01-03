@@ -1,7 +1,7 @@
 services:
 
   watchtower:
-    image: containrrr/watchtower:1.7.1
+    image: containrrr/watchtower:latest
     restart: unless-stopped
     env_file:
       - .env.docker
