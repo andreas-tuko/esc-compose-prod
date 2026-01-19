@@ -1,7 +1,7 @@
 #!/bin/bash
 
-# ESC Django Application - Enterprise Deployment Script v2.0
-# Production-grade deployment with comprehensive security hardening
+# ESC Django Application - Enterprise Deployment Script v2.1
+# Production-grade deployment with SAFE SSH hardening
 # For DevOps teams - Full integration with Django app structure
 
 set -e
@@ -112,6 +112,8 @@ SSH_PORT="$SSH_PORT"
 FAIL2BAN_AGGRESSIVE="$FAIL2BAN_AGGRESSIVE"
 ENABLE_2FA_SETUP="$ENABLE_2FA_SETUP"
 FIREWALL_WHITELIST="$FIREWALL_WHITELIST"
+DISABLE_ROOT_LOGIN="$DISABLE_ROOT_LOGIN"
+CREATED_SUDO_USER="$CREATED_SUDO_USER"
 EOF
     
     chmod 600 "$CONFIG_FILE"
@@ -290,10 +292,10 @@ configure_security_enterprise() {
     print_section "SSH Hardening Configuration (Enterprise Grade)"
     
     echo "Enable SSH hardening? (Highly Recommended)"
-    echo "  ✓ Disable password authentication (key-only)"
     echo "  ✓ Change SSH port from default 22"
     echo "  ✓ Add SSH banner warning"
-    echo "  ✓ Disable root login"
+    echo "  ✓ Option to disable password authentication (key-only)"
+    echo "  ✓ Option to disable root login (with safety checks)"
     echo "  ✓ Restrict SSH to specific IPs (optional)"
     echo
     read -p "Enable SSH hardening? [Y/n]: " ENABLE_SSH_HARDENING
@@ -337,6 +339,48 @@ configure_security_enterprise() {
             FAIL2BAN_AGGRESSIVE="false"
         fi
         
+        # Root login disable option
+        echo
+        print_warning "IMPORTANT: Disabling root login configuration"
+        echo
+        echo "Do you want to disable root login via SSH?"
+        echo "  ⚠ Only say YES if:"
+        echo "    - You have created another sudo user with a password"
+        echo "    - You have copied SSH keys to that user"
+        echo "    - You have tested SSH login with that user"
+        echo
+        read -p "Disable root login? [y/N]: " DISABLE_ROOT_PROMPT
+        DISABLE_ROOT_PROMPT=${DISABLE_ROOT_PROMPT:-N}
+        
+        if [[ "$DISABLE_ROOT_PROMPT" =~ ^[Yy]$ ]]; then
+            DISABLE_ROOT_LOGIN="yes"
+            print_warning "Root login will be disabled"
+        else
+            DISABLE_ROOT_LOGIN="no"
+            print_info "Root login will remain enabled"
+        fi
+        
+        # Password authentication disable option
+        echo
+        print_warning "IMPORTANT: Password authentication configuration"
+        echo
+        echo "Do you want to disable password authentication (key-only)?"
+        echo "  ⚠ Only say YES if:"
+        echo "    - You have SSH keys properly configured"
+        echo "    - You have tested SSH key authentication"
+        echo "    - You have backup access to the server"
+        echo
+        read -p "Disable password authentication? [y/N]: " DISABLE_PASSWORD_AUTH
+        DISABLE_PASSWORD_AUTH=${DISABLE_PASSWORD_AUTH:-N}
+        
+        if [[ "$DISABLE_PASSWORD_AUTH" =~ ^[Yy]$ ]]; then
+            PASSWORD_AUTH="no"
+            print_warning "Password authentication will be disabled"
+        else
+            PASSWORD_AUTH="yes"
+            print_info "Password authentication will remain enabled"
+        fi
+        
         # 2FA Setup Prompt
         echo
         print_info "Setup SSH 2FA guide? (Two-Factor Authentication)"
@@ -350,6 +394,8 @@ configure_security_enterprise() {
         FIREWALL_WHITELIST=""
         FAIL2BAN_AGGRESSIVE="false"
         ENABLE_2FA_SETUP="false"
+        DISABLE_ROOT_LOGIN="no"
+        PASSWORD_AUTH="yes"
     fi
     
     print_header "Configuration Summary"
@@ -362,6 +408,8 @@ configure_security_enterprise() {
         echo "SSH Port: $SSH_PORT"
         [ -n "$FIREWALL_WHITELIST" ] && echo "Whitelisted IPs: $FIREWALL_WHITELIST"
         echo "Aggressive Fail2Ban: $FAIL2BAN_AGGRESSIVE"
+        echo "Root Login: $DISABLE_ROOT_LOGIN"
+        echo "Password Auth: $PASSWORD_AUTH"
     fi
     echo
     
@@ -415,14 +463,32 @@ create_deployer_user() {
         
         if id "deployer" &>/dev/null; then
             print_warning "User 'deployer' already exists"
+            CREATED_SUDO_USER="deployer"
         else
             sudo useradd -m -s /bin/bash deployer
             sudo usermod -aG docker deployer
+            sudo usermod -aG sudo deployer
             sudo mkdir -p /home/deployer/.ssh
             sudo chmod 700 /home/deployer/.ssh
+            
+            # Copy root's authorized_keys if it exists
+            if [ -f /root/.ssh/authorized_keys ]; then
+                sudo cp /root/.ssh/authorized_keys /home/deployer/.ssh/
+                sudo chown deployer:deployer /home/deployer/.ssh/authorized_keys
+                sudo chmod 600 /home/deployer/.ssh/authorized_keys
+                print_success "SSH keys copied to deployer user"
+            fi
+            
             sudo chown deployer:deployer /home/deployer/.ssh
-            print_success "User 'deployer' created"
+            
+            print_success "User 'deployer' created with sudo privileges"
+            print_warning "Set password for deployer user:"
+            sudo passwd deployer
+            
+            CREATED_SUDO_USER="deployer"
         fi
+    else
+        CREATED_SUDO_USER=""
     fi
 }
 
@@ -1283,8 +1349,8 @@ ListenAddress 0.0.0.0
 
 # Authentication
 PubkeyAuthentication yes
-PermitRootLogin no
-PasswordAuthentication no
+PermitRootLogin $DISABLE_ROOT_LOGIN
+PasswordAuthentication $PASSWORD_AUTH
 PermitEmptyPasswords no
 ChallengeResponseAuthentication no
 UsePAM yes
@@ -1334,6 +1400,14 @@ BANNER
     if sudo sshd -t; then
         sudo systemctl restart ssh
         print_success "SSH hardened (Port: $SSH_PORT)"
+        
+        if [ "$DISABLE_ROOT_LOGIN" = "no" ]; then
+            print_success "Root login: ENABLED"
+        fi
+        
+        if [ "$PASSWORD_AUTH" = "yes" ]; then
+            print_success "Password auth: ENABLED"
+        fi
     else
         print_error "SSH config invalid, reverting..."
         sudo cp /etc/ssh/sshd_config.backup.* /etc/ssh/sshd_config
@@ -1730,12 +1804,26 @@ print_completion() {
     if [ "$SSH_HARDENING" = "true" ]; then
         echo "SSH SECURITY:"
         echo "  Port: $SSH_PORT"
-        echo "  Auth: Key-only (passwords disabled)"
-        echo "  Root: Disabled"
+        echo "  Root Login: $DISABLE_ROOT_LOGIN"
+        echo "  Password Auth: $PASSWORD_AUTH"
+        [ -n "$FIREWALL_WHITELIST" ] && echo "  Whitelisted IPs: $FIREWALL_WHITELIST"
+        echo "  Aggressive Fail2Ban: $FAIL2BAN_AGGRESSIVE"
         echo
         echo "To connect:"
-        echo "  ssh -p $SSH_PORT user@$DOMAIN_NAME"
+        if [ -n "$CREATED_SUDO_USER" ]; then
+            echo "  ssh -p $SSH_PORT $CREATED_SUDO_USER@$DOMAIN_NAME"
+        else
+            echo "  ssh -p $SSH_PORT user@$DOMAIN_NAME"
+        fi
         echo
+        
+        if [ "$DISABLE_ROOT_LOGIN" = "yes" ] || [ "$PASSWORD_AUTH" = "no" ]; then
+            print_warning "IMPORTANT SECURITY NOTES:"
+            [ "$DISABLE_ROOT_LOGIN" = "yes" ] && echo "  • Root login is DISABLED"
+            [ "$PASSWORD_AUTH" = "no" ] && echo "  • Password auth is DISABLED (SSH keys only)"
+            echo "  • Ensure you have SSH key access configured!"
+            echo
+        fi
     fi
     
     echo "NEXT STEPS:"
@@ -1752,7 +1840,7 @@ print_completion() {
 # ============================================================================
 
 main() {
-    print_header "ESC Django - Enterprise Deployment Script v2.0"
+    print_header "ESC Django - Enterprise Deployment Script v2.1"
     
     check_sudo
     check_os
