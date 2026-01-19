@@ -1,8 +1,7 @@
 #!/bin/bash
 
-# ESC Django Application - Automated Deployment Script with Security Hardening
-# This script automates complete deployment including Cloudflare protection and Fail2Ban
-# Includes: Docker, Nginx, SSL, Fail2Ban, Rate Limiting, and Threat Detection
+# ESC Django Application - Automated Deployment Script
+# This script automates the complete deployment of the ESC application on a fresh VPS
 
 set -e
 
@@ -13,7 +12,7 @@ YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
 MAGENTA='\033[0;35m'
 CYAN='\033[0;36m'
-NC='\033[0m'
+NC='\033[0m' # No Color
 
 # Print functions
 print_header() {
@@ -68,9 +67,9 @@ check_os() {
     fi
 }
 
-# Load existing configuration
+# Load existing configuration if available
 load_existing_config() {
-    CONFIG_FILE="${APP_DIR:-.}/.deployment_config"
+    CONFIG_FILE="$DEFAULT_APP_DIR/.deployment_config"
     
     if [ -f "$CONFIG_FILE" ]; then
         print_info "Found existing configuration"
@@ -93,15 +92,132 @@ DOCKER_USERNAME="$DOCKER_USERNAME"
 APP_DIR="$APP_DIR"
 SETUP_SSL="$SETUP_SSL"
 SSL_EMAIL="$SSL_EMAIL"
-SECURITY_ENABLED="$SECURITY_ENABLED"
-ADMIN_EMAIL="$ADMIN_EMAIL"
 EOF
     
     chmod 600 "$CONFIG_FILE"
     print_success "Configuration saved for future deployments"
 }
 
-# Configure SSL option
+# Interactive configuration
+gather_config() {
+    print_header "Configuration Setup"
+    
+    # Set default app directory first
+    DEFAULT_APP_DIR="/opt/apps/esc"
+    
+    # Try to load existing configuration
+    load_existing_config
+    
+    if [ "$EXISTING_CONFIG" = true ]; then
+        print_success "Existing deployment detected!"
+        echo
+        echo "Previous configuration:"
+        echo "  Domain: $DOMAIN_NAME"
+        echo "  Docker Hub User: $DOCKER_USERNAME"
+        echo "  App Directory: $APP_DIR"
+        echo "  SSL: $SETUP_SSL"
+        echo
+        read -p "Use existing configuration? [Y/n]: " USE_EXISTING
+        USE_EXISTING=${USE_EXISTING:-Y}
+        
+        if [[ "$USE_EXISTING" =~ ^[Yy]$ ]]; then
+            print_info "Using saved configuration"
+            
+            # Still ask for Docker password (not saved for security)
+            print_info "Docker Hub password required (not saved for security)"
+            read -sp "Docker Hub password/token: " DOCKER_PASSWORD
+            echo
+            while [ -z "$DOCKER_PASSWORD" ]; do
+                print_warning "Docker Hub password cannot be empty"
+                read -sp "Docker Hub password/token: " DOCKER_PASSWORD
+                echo
+            done
+            
+            # Skip other questions, use existing values
+            CREATE_USER="n"  # Already created
+            SETUP_FIREWALL="n"  # Already configured
+            
+            return 0
+        else
+            print_info "Reconfiguring deployment..."
+        fi
+    fi
+    
+    # Domain name (with default from existing config if available)
+    if [ -n "$DOMAIN_NAME" ]; then
+        read -p "Enter your domain name [$DOMAIN_NAME]: " NEW_DOMAIN_NAME
+        DOMAIN_NAME=${NEW_DOMAIN_NAME:-$DOMAIN_NAME}
+    else
+        read -p "Enter your domain name (e.g., example.com): " DOMAIN_NAME
+        while [ -z "$DOMAIN_NAME" ]; do
+            print_warning "Domain name cannot be empty"
+            read -p "Enter your domain name: " DOMAIN_NAME
+        done
+    fi
+    
+    # Docker Hub credentials (with default username from existing config if available)
+    print_info "Docker Hub credentials are required to pull the private image"
+    
+    if [ -n "$DOCKER_USERNAME" ]; then
+        read -p "Docker Hub username [$DOCKER_USERNAME]: " NEW_DOCKER_USERNAME
+        DOCKER_USERNAME=${NEW_DOCKER_USERNAME:-$DOCKER_USERNAME}
+    else
+        read -p "Docker Hub username: " DOCKER_USERNAME
+        while [ -z "$DOCKER_USERNAME" ]; do
+            print_warning "Docker Hub username cannot be empty"
+            read -p "Docker Hub username: " DOCKER_USERNAME
+        done
+    fi
+    
+    read -sp "Docker Hub password/token: " DOCKER_PASSWORD
+    echo
+    while [ -z "$DOCKER_PASSWORD" ]; do
+        print_warning "Docker Hub password cannot be empty"
+        read -sp "Docker Hub password/token: " DOCKER_PASSWORD
+        echo
+    done
+    
+    # Application directory (with default from existing config if available)
+    if [ -n "$APP_DIR" ]; then
+        read -p "Application directory [$APP_DIR]: " NEW_APP_DIR
+        APP_DIR=${NEW_APP_DIR:-$APP_DIR}
+    else
+        read -p "Application directory [$DEFAULT_APP_DIR]: " APP_DIR
+        APP_DIR=${APP_DIR:-$DEFAULT_APP_DIR}
+    fi
+    
+    # Create deployer user (skip if re-deploying)
+    if [ "$EXISTING_CONFIG" != true ]; then
+        read -p "Create a dedicated 'deployer' user? (recommended) [Y/n]: " CREATE_USER
+        CREATE_USER=${CREATE_USER:-Y}
+    fi
+    
+    # Setup firewall (skip if re-deploying)
+    if [ "$EXISTING_CONFIG" != true ]; then
+        read -p "Configure UFW firewall? (recommended) [Y/n]: " SETUP_FIREWALL
+        SETUP_FIREWALL=${SETUP_FIREWALL:-Y}
+    fi
+    
+    # SSL Certificate setup (with default from existing config if available)
+    if [ "$EXISTING_CONFIG" = true ] && [ -n "$SETUP_SSL" ]; then
+        echo
+        print_info "SSL Certificate Configuration"
+        echo "Current SSL setup: $SETUP_SSL"
+        read -p "Keep existing SSL configuration? [Y/n]: " KEEP_SSL
+        KEEP_SSL=${KEEP_SSL:-Y}
+        
+        if [[ "$KEEP_SSL" =~ ^[Yy]$ ]]; then
+            print_info "Keeping existing SSL configuration"
+        else
+            # Ask for new SSL configuration
+            configure_ssl_option
+        fi
+    else
+        configure_ssl_option
+    fi
+}
+
+# Configure SSL option (extracted to separate function)
 configure_ssl_option() {
     echo
     print_info "SSL Certificate Configuration"
@@ -134,156 +250,6 @@ configure_ssl_option() {
         print_info "Will use HTTP only (Cloudflare handles SSL)"
     fi
 }
-
-# Configure security settings
-configure_security() {
-    print_header "Security Configuration"
-    
-    echo "Enable advanced security features? (Recommended: Yes)"
-    echo "  • Cloudflare-only IP enforcement"
-    echo "  • Fail2Ban with multi-jail detection"
-    echo "  • Rate limiting protection"
-    echo "  • Vulnerability scanning detection"
-    echo "  • DDoS protection"
-    echo "  • SQL injection/XSS blocking"
-    
-    read -p "Enable security features? [Y/n]: " ENABLE_SECURITY
-    ENABLE_SECURITY=${ENABLE_SECURITY:-Y}
-    
-    if [[ "$ENABLE_SECURITY" =~ ^[Yy]$ ]]; then
-        SECURITY_ENABLED="true"
-        
-        if [ -n "$ADMIN_EMAIL" ]; then
-            read -p "Admin email for security alerts [$ADMIN_EMAIL]: " NEW_ADMIN_EMAIL
-            ADMIN_EMAIL=${NEW_ADMIN_EMAIL:-$ADMIN_EMAIL}
-        else
-            read -p "Admin email for security alerts: " ADMIN_EMAIL
-            while [ -z "$ADMIN_EMAIL" ]; do
-                print_warning "Email cannot be empty"
-                read -p "Admin email for security alerts: " ADMIN_EMAIL
-            done
-        fi
-        
-        print_success "Security features will be enabled"
-    else
-        SECURITY_ENABLED="false"
-        ADMIN_EMAIL=""
-        print_warning "Security features will be skipped (not recommended)"
-    fi
-}
-
-# Interactive configuration
-gather_config() {
-    print_header "Configuration Setup"
-    
-    DEFAULT_APP_DIR="/opt/apps/esc"
-    APP_DIR="${APP_DIR:-$DEFAULT_APP_DIR}"
-    
-    load_existing_config
-    
-    if [ "$EXISTING_CONFIG" = true ]; then
-        print_success "Existing deployment detected!"
-        echo
-        echo "Previous configuration:"
-        echo "  Domain: $DOMAIN_NAME"
-        echo "  Docker Hub User: $DOCKER_USERNAME"
-        echo "  App Directory: $APP_DIR"
-        echo "  SSL: $SETUP_SSL"
-        echo "  Security: $SECURITY_ENABLED"
-        echo
-        read -p "Use existing configuration? [Y/n]: " USE_EXISTING
-        USE_EXISTING=${USE_EXISTING:-Y}
-        
-        if [[ "$USE_EXISTING" =~ ^[Yy]$ ]]; then
-            print_info "Using saved configuration"
-            
-            read -sp "Docker Hub password/token: " DOCKER_PASSWORD
-            echo
-            while [ -z "$DOCKER_PASSWORD" ]; do
-                print_warning "Docker Hub password cannot be empty"
-                read -sp "Docker Hub password/token: " DOCKER_PASSWORD
-                echo
-            done
-            
-            CREATE_USER="n"
-            SETUP_FIREWALL="n"
-            
-            return 0
-        fi
-    fi
-    
-    # Domain name
-    if [ -n "$DOMAIN_NAME" ]; then
-        read -p "Enter your domain name [$DOMAIN_NAME]: " NEW_DOMAIN_NAME
-        DOMAIN_NAME=${NEW_DOMAIN_NAME:-$DOMAIN_NAME}
-    else
-        read -p "Enter your domain name (e.g., example.com): " DOMAIN_NAME
-        while [ -z "$DOMAIN_NAME" ]; do
-            print_warning "Domain name cannot be empty"
-            read -p "Enter your domain name: " DOMAIN_NAME
-        done
-    fi
-    
-    # Docker Hub credentials
-    print_info "Docker Hub credentials are required to pull the private image"
-    
-    if [ -n "$DOCKER_USERNAME" ]; then
-        read -p "Docker Hub username [$DOCKER_USERNAME]: " NEW_DOCKER_USERNAME
-        DOCKER_USERNAME=${NEW_DOCKER_USERNAME:-$DOCKER_USERNAME}
-    else
-        read -p "Docker Hub username: " DOCKER_USERNAME
-        while [ -z "$DOCKER_USERNAME" ]; do
-            print_warning "Docker Hub username cannot be empty"
-            read -p "Docker Hub username: " DOCKER_USERNAME
-        done
-    fi
-    
-    read -sp "Docker Hub password/token: " DOCKER_PASSWORD
-    echo
-    while [ -z "$DOCKER_PASSWORD" ]; do
-        print_warning "Docker Hub password cannot be empty"
-        read -sp "Docker Hub password/token: " DOCKER_PASSWORD
-        echo
-    done
-    
-    # Application directory
-    if [ -n "$APP_DIR" ] && [ "$APP_DIR" != "$DEFAULT_APP_DIR" ]; then
-        read -p "Application directory [$APP_DIR]: " NEW_APP_DIR
-        APP_DIR=${NEW_APP_DIR:-$APP_DIR}
-    else
-        read -p "Application directory [$DEFAULT_APP_DIR]: " APP_DIR
-        APP_DIR=${APP_DIR:-$DEFAULT_APP_DIR}
-    fi
-    
-    # Create deployer user
-    if [ "$EXISTING_CONFIG" != true ]; then
-        read -p "Create a dedicated 'deployer' user? (recommended) [Y/n]: " CREATE_USER
-        CREATE_USER=${CREATE_USER:-Y}
-    fi
-    
-    # Setup firewall
-    if [ "$EXISTING_CONFIG" != true ]; then
-        read -p "Configure UFW firewall? (recommended) [Y/n]: " SETUP_FIREWALL
-        SETUP_FIREWALL=${SETUP_FIREWALL:-Y}
-    fi
-    
-    # SSL Certificate setup
-    if [ "$EXISTING_CONFIG" = true ] && [ -n "$SETUP_SSL" ]; then
-        echo
-        print_info "Current SSL setup: $SETUP_SSL"
-        read -p "Keep existing SSL configuration? [Y/n]: " KEEP_SSL
-        KEEP_SSL=${KEEP_SSL:-Y}
-        
-        if [[ ! "$KEEP_SSL" =~ ^[Yy]$ ]]; then
-            configure_ssl_option
-        fi
-    else
-        configure_ssl_option
-    fi
-    
-    # Security configuration
-    configure_security
-    
     print_header "Configuration Summary"
     echo "Domain: $DOMAIN_NAME"
     echo "Docker Hub User: $DOCKER_USERNAME"
@@ -296,10 +262,6 @@ gather_config() {
         echo "SSL: Self-signed certificate"
     else
         echo "SSL: None (Cloudflare only)"
-    fi
-    echo "Security Features: $SECURITY_ENABLED"
-    if [ "$SECURITY_ENABLED" = "true" ]; then
-        echo "Admin Email: $ADMIN_EMAIL"
     fi
     echo
     
@@ -317,7 +279,7 @@ update_system() {
     print_header "Updating System Packages"
     sudo apt update
     sudo apt upgrade -y
-    sudo apt install -y curl wget git ufw nano jq mailutils sendmail
+    sudo apt install -y curl wget git ufw nano
     print_success "System updated"
 }
 
@@ -334,10 +296,12 @@ install_docker() {
         sudo sh get-docker.sh
         rm get-docker.sh
         
+        # Add current user to docker group
         sudo usermod -aG docker $USER
         print_success "Docker installed"
     fi
     
+    # Install Docker Compose plugin
     if docker compose version &> /dev/null; then
         print_warning "Docker Compose is already installed"
         docker compose version
@@ -409,7 +373,7 @@ generate_secret_key() {
     python3 -c "import secrets; print(secrets.token_urlsafe(50))"
 }
 
-# Setup environment file
+# Setup environment file with interactive editing
 setup_env_file() {
     print_header "Environment Configuration"
     
@@ -423,75 +387,77 @@ setup_env_file() {
             return
         fi
         
+        # Backup existing file
         cp $APP_DIR/.env.docker $APP_DIR/.env.docker.backup.$(date +%Y%m%d_%H%M%S)
         print_info "Existing file backed up"
     fi
     
     print_step "Creating environment file with default values..."
     
+    # Generate a secure secret key
     GENERATED_SECRET_KEY=$(generate_secret_key)
     
     cat > $APP_DIR/.env.docker << EOF
-============================================
-Django Core Settings
-============================================
+# ============================================
+# Django Core Settings
+# ============================================
 SECRET_KEY=$GENERATED_SECRET_KEY
 DEBUG=False
 ENVIRONMENT=production
 ALLOWED_HOSTS=localhost,$DOMAIN_NAME,www.$DOMAIN_NAME
 CSRF_ORIGINS=https://$DOMAIN_NAME,https://www.$DOMAIN_NAME
 
-============================================
-Database Configuration
-============================================
+# ============================================
+# Database Configuration
+# ============================================
 DATABASE_URL=postgresql://user:password@host:port/dbname
 ANALYTICS_DATABASE_URL=postgresql://user:password@host:port/analytics_db
 
-============================================
-Redis Configuration
-============================================
+# ============================================
+# Redis Configuration
+# ============================================
 REDIS_URL=redis://redis:6379
 REDIS_HOST=redis
 REDIS_PASSWORD=
 
-============================================
-Site Configuration
-============================================
+# ============================================
+# Site Configuration
+# ============================================
 SITE_ID=1
 SITE_NAME=$DOMAIN_NAME
 SITE_URL=https://$DOMAIN_NAME
 BASE_URL=https://sandbox.safaricom.co.ke
 
-============================================
-Email Configuration
-============================================
+# ============================================
+# Email Configuration
+# ============================================
 DEFAULT_FROM_EMAIL=noreply@$DOMAIN_NAME
 EMAIL_HOST=smtp.gmail.com
 EMAIL_HOST_USER=your-email@gmail.com
 EMAIL_HOST_PASSWORD=your-app-password
 EMAIL_PORT=587
 
-============================================
-Cloudflare R2 Storage (Private)
-============================================
+# ============================================
+# Cloudflare R2 Storage (Private)
+# ============================================
 CLOUDFLARE_R2_ACCESS_KEY=your-access-key
 CLOUDFLARE_R2_SECRET_KEY=your-secret-key
 CLOUDFLARE_R2_BUCKET=your-bucket-name
 CLOUDFLARE_R2_BUCKET_ENDPOINT=https://your-account-id.r2.cloudflarestorage.com
 CLOUDFLARE_R2_TOKEN_VALUE=your-token
 
-============================================
-Cloudflare R2 Storage (Public/CDN)
-============================================
+# ============================================
+# Cloudflare R2 Storage (Public/CDN)
+# ============================================
 CLOUDFLARE_R2_PUBLIC_ACCESS_KEY=your-public-access-key
 CLOUDFLARE_R2_PUBLIC_SECRET_KEY=your-public-secret-key
 CLOUDFLARE_R2_PUBLIC_BUCKET=your-public-bucket
 CLOUDFLARE_R2_PUBLIC_BUCKET_ENDPOINT=https://your-account-id.r2.cloudflarestorage.com
 CLOUDFLARE_R2_PUBLIC_CUSTOM_DOMAIN=https://cdn.$DOMAIN_NAME
 
-============================================
-Backup R2 Storage
-============================================
+# ============================================
+# Backup R2 Storage
+# ============================================
 BACKUP_R2_ACCESS_KEY_ID=your-backup-access-key
 BACKUP_R2_SECRET_ACCESS_KEY=your-backup-secret-key
 BACKUP_R2_BUCKET_NAME=your-backup-bucket
@@ -499,66 +465,94 @@ BACKUP_R2_ENDPOINT=https://your-account-id.r2.cloudflarestorage.com
 BACKUP_R2_ACCOUNT_ID=your-account-id
 BACKUP_R2_REGION=auto
 
-============================================
-M-Pesa Payment Configuration
-============================================
+# ============================================
+# M-Pesa Payment Configuration
+# ============================================
 MPESA_CONSUMER_KEY=your-consumer-key
 MPESA_CONSUMER_SECRET=your-consumer-secret
 MPESA_PASSKEY=your-passkey
 MPESA_SHORTCODE=174379
 CALLBACK_URL=https://$DOMAIN_NAME/api/mpesa/callback
 
-============================================
-Google OAuth
-============================================
+# ============================================
+# Google OAuth
+# ============================================
 GOOGLE_OAUTH_CLIENT_ID=your-client-id.apps.googleusercontent.com
 GOOGLE_OATH_CLIENT_ID=your-client-id.apps.googleusercontent.com
 GOOGLE_OAUTH_CLIENT_SECRET=your-client-secret
 
-============================================
-GeoIP Configuration
-============================================
+# ============================================
+# GeoIP Configuration
+# ============================================
 GEOIP_LICENSE_KEY=your-maxmind-license-key
 
-============================================
-reCAPTCHA
-============================================
+# ============================================
+# reCAPTCHA
+# ============================================
 RECAPTCHA_PUBLIC_KEY=your-recaptcha-site-key
 RECAPTCHA_PRIVATE_KEY=your-recaptcha-secret-key
 
-============================================
-Monitoring & Analytics
-============================================
+# ============================================
+# Monitoring & Analytics
+# ============================================
 SENTRY_DSN=https://your-sentry-dsn@sentry.io/project-id
 POSTHOG_ENABLED=True
 POSTHOG_HOST=https://eu.i.posthog.com
 POSTHOG_API_KEY=your-posthog-project-api-key
 
-============================================
-Admin Configuration
-============================================
+# ============================================
+# Admin Configuration
+# ============================================
 ADMIN_NAME=Admin Name
 ADMIN_EMAIL=admin@$DOMAIN_NAME
 
-============================================
-Python Configuration
-============================================
+# ============================================
+# Python Configuration
+# ============================================
 PYTHON_VERSION=3.13.5
 UID=1000
 EOF
     
-    print_success "Environment file created"
+    print_success "Environment file created with default values"
     
+    # Show important notice
     print_header "IMPORTANT: Environment Configuration Required"
     echo
-    print_warning "The application REQUIRES proper configuration!"
+    print_warning "The application REQUIRES proper configuration to run successfully!"
     echo
-    print_info "Press Enter to open editor and configure environment..."
-    read
+    print_info "The nano editor will now open with your environment file."
+    print_info "Please configure the following REQUIRED settings:"
+    echo
+    echo "  ${GREEN}✓ Already configured:${NC}"
+    echo "    - SECRET_KEY (auto-generated)"
+    echo "    - ALLOWED_HOSTS (set to your domain)"
+    echo "    - SITE_URL (set to your domain)"
+    echo
+    echo "  ${YELLOW}⚠ REQUIRED - Must configure:${NC}"
+    echo "    - DATABASE_URL (if using external PostgreSQL)"
+    echo "    - EMAIL_HOST_USER & EMAIL_HOST_PASSWORD (for email functionality)"
+    echo
+    echo "  ${CYAN}○ OPTIONAL - Configure if needed:${NC}"
+    echo "    - Cloudflare R2 credentials (for file storage)"
+    echo "    - M-Pesa credentials (for payments)"
+    echo "    - Google OAuth (for social login)"
+    echo "    - Sentry & PostHog (for monitoring)"
+    echo "    - reCAPTCHA keys (for bot protection)"
+    echo
+    print_info "Tips for editing in nano:"
+    echo "  - Use arrow keys to navigate"
+    echo "  - Replace 'your-*' placeholders with actual values"
+    echo "  - Leave optional fields if not using those features"
+    echo "  - Press Ctrl+X, then Y, then Enter to save and exit"
+    echo
+    read -p "Press Enter to open the editor and configure your environment..."
     
+    # Open nano editor
     nano $APP_DIR/.env.docker
     
     print_success "Environment file saved"
+    
+    # Validate configuration
     validate_env_file
 }
 
@@ -567,18 +561,21 @@ validate_env_file() {
     print_header "Validating Environment Configuration"
     
     local validation_failed=false
-    local errors=()
     local warnings=()
+    local errors=()
     
+    # Check if file exists
     if [ ! -f "$APP_DIR/.env.docker" ]; then
         print_error "Environment file not found!"
         exit 1
     fi
     
+    # Source the env file for validation
     set -a
     source $APP_DIR/.env.docker 2>/dev/null || true
     set +a
     
+    # Critical validations
     if [ -z "$SECRET_KEY" ] || [ "$SECRET_KEY" = "your-secret-key-here" ]; then
         errors+=("SECRET_KEY is not configured")
         validation_failed=true
@@ -589,14 +586,24 @@ validate_env_file() {
         validation_failed=true
     fi
     
+    # Important warnings (not blocking)
     if [[ "$DATABASE_URL" == *"user:password@host"* ]]; then
-        warnings+=("DATABASE_URL contains placeholder values")
+        warnings+=("DATABASE_URL contains placeholder values (if you're using PostgreSQL, configure this)")
     fi
     
     if [ "$EMAIL_HOST_USER" = "your-email@gmail.com" ]; then
-        warnings+=("Email not configured")
+        warnings+=("Email not configured (email functionality will not work)")
     fi
     
+    if [[ "$CLOUDFLARE_R2_ACCESS_KEY" == "your-access-key" ]]; then
+        warnings+=("Cloudflare R2 not configured (file storage may not work)")
+    fi
+    
+    if [[ "$MPESA_CONSUMER_KEY" == "your-consumer-key" ]]; then
+        warnings+=("M-Pesa not configured (payment functionality will not work)")
+    fi
+    
+    # Display results
     if [ "$validation_failed" = true ]; then
         print_error "Configuration validation FAILED!"
         echo
@@ -605,12 +612,13 @@ validate_env_file() {
             echo "  ✗ $error"
         done
         echo
-        read -p "Edit configuration again? [Y/n]: " EDIT_AGAIN
+        print_warning "Please fix these errors before continuing."
+        read -p "Do you want to edit the configuration again? [Y/n]: " EDIT_AGAIN
         EDIT_AGAIN=${EDIT_AGAIN:-Y}
         
         if [[ "$EDIT_AGAIN" =~ ^[Yy]$ ]]; then
             nano $APP_DIR/.env.docker
-            validate_env_file
+            validate_env_file  # Recursive call to re-validate
             return
         else
             print_error "Cannot proceed with invalid configuration."
@@ -618,395 +626,32 @@ validate_env_file() {
         fi
     fi
     
+    # Display warnings
     if [ ${#warnings[@]} -gt 0 ]; then
         print_warning "Configuration warnings (non-critical):"
         for warning in "${warnings[@]}"; do
             echo "  ⚠ $warning"
         done
         echo
+        print_info "You can continue, but some features may not work without proper configuration."
+        read -p "Continue anyway? [Y/n]: " CONTINUE_ANYWAY
+        CONTINUE_ANYWAY=${CONTINUE_ANYWAY:-Y}
+        
+        if [[ ! "$CONTINUE_ANYWAY" =~ ^[Yy]$ ]]; then
+            nano $APP_DIR/.env.docker
+            validate_env_file  # Recursive call to re-validate
+            return
+        fi
     fi
     
     print_success "Environment configuration validated"
 }
 
-# Install Fail2Ban
-install_fail2ban() {
-    print_header "Installing Fail2Ban"
-    
-    if command -v fail2ban-server &> /dev/null; then
-        print_warning "Fail2Ban already installed"
-    else
-        sudo apt install -y fail2ban
-        print_success "Fail2Ban installed"
-    fi
-}
-
-# Configure Fail2Ban
-setup_fail2ban() {
-    print_header "Configuring Fail2Ban with Security Policies"
-    
-    mkdir -p /tmp/fail2ban_setup
-    cd /tmp/fail2ban_setup
-    
-    # Create jail.local
-    cat > jail.local << EOF
-[DEFAULT]
-bantime = 2592000
-findtime = 3600
-maxretry = 5
-destemail = $ADMIN_EMAIL
-sendername = Fail2Ban
-action = %(action_mwl)s
-[sshd]
-enabled = true
-port = ssh
-logpath = /var/log/auth.log
-maxretry = 3
-bantime = 604800
-findtime = 600
-[nginx-cloudflare-only]
-enabled = true
-port = http,https
-logpath = /var/log/nginx/esc_error.log
-maxretry = 1
-bantime = 2592000
-findtime = 300
-[nginx-bad-requests]
-enabled = true
-port = http,https
-logpath = /var/log/nginx/esc_access.log
-maxretry = 5
-bantime = 86400
-findtime = 600
-[nginx-rate-limit]
-enabled = true
-port = http,https
-logpath = /var/log/nginx/esc_access.log
-maxretry = 3
-bantime = 86400
-findtime = 300
-[nginx-noscript]
-enabled = true
-port = http,https
-logpath = /var/log/nginx/esc_access.log
-maxretry = 2
-bantime = 1209600
-findtime = 600
-[nginx-scan]
-enabled = true
-port = http,https
-logpath = /var/log/nginx/esc_access.log
-maxretry = 3
-bantime = 604800
-findtime = 600
-[nginx-sqli]
-enabled = true
-port = http,https
-logpath = /var/log/nginx/esc_access.log
-maxretry = 1
-bantime = 2592000
-findtime = 300
-[nginx-xss]
-enabled = true
-port = http,https
-logpath = /var/log/nginx/esc_access.log
-maxretry = 3
-bantime = 1209600
-findtime = 600
-[nginx-rfi-lfi]
-enabled = true
-port = http,https
-logpath = /var/log/nginx/esc_access.log
-maxretry = 1
-bantime = 2592000
-findtime = 300
-[nginx-baduseragent]
-enabled = true
-port = http,https
-logpath = /var/log/nginx/esc_access.log
-maxretry = 1
-bantime = 1209600
-findtime = 300
-[nginx-ddos]
-enabled = true
-port = http,https
-logpath = /var/log/nginx/esc_access.log
-maxretry = 100
-bantime = 3600
-findtime = 60
-EOF
-    
-    sudo cp jail.local /etc/fail2ban/jail.local
-    
-    # Create filters directory
-    mkdir -p filters
-    
-    # Create all filter files
-    cat > filters/nginx-cloudflare-only.conf << 'FILTER'
-[Definition]
-failregex = ^<HOST> .* "." .$
-ignoreregex =
-FILTER
-    
-    cat > filters/nginx-bad-requests.conf << 'FILTER'
-[Definition]
-failregex = ^<HOST> .* "." (?:400|403|429|444) .$
-ignoreregex =
-FILTER
-    
-    cat > filters/nginx-rate-limit.conf << 'FILTER'
-[Definition]
-failregex = ^<HOST> .* "." 429 .$
-ignoreregex =
-FILTER
-    
-    cat > filters/nginx-noscript.conf << 'FILTER'
-[Definition]
-failregex = ^<HOST> .* "(?:GET|POST|HEAD|OPTIONS) /(.php|.asp|.cgi|wp-admin|wp-login|xmlrpc.php|shell.php|backdoor|admin.php)" .*$
-ignoreregex =
-FILTER
-    
-    cat > filters/nginx-scan.conf << 'FILTER'
-[Definition]
-failregex = ^<HOST> .* "(?:GET|POST|HEAD|OPTIONS) /?(admin|api|backup|config|database|wp-content|uploads|files|includes|themes|plugins|.env|.git|.aws|.ssh|.htaccess|web.config)" .*$
-ignoreregex =
-FILTER
-    
-    cat > filters/nginx-sqli.conf << 'FILTER'
-[Definition]
-failregex = ^<HOST> .* "(?:.(?:union|select|insert|update|delete|drop|create|alter|exec|execute|script|javascript|onclick|onerror|alert|eval).)" .*$
-ignoreregex =
-FILTER
-    
-    cat > filters/nginx-xss.conf << 'FILTER'
-[Definition]
-failregex = ^<HOST> .* "(?:.(?:<script|javascript:|onerror=|onclick=|alert(|eval(|vbscript:|onload=).)" .*$
-ignoreregex =
-FILTER
-    
-    cat > filters/nginx-rfi-lfi.conf << 'FILTER'
-[Definition]
-failregex = ^<HOST> .* "(?:.(?:file://|../|..\|etc/passwd|proc/self|ftp://|http://|https://|gopher://|data:).)" .*$
-ignoreregex =
-FILTER
-    
-    cat > filters/nginx-baduseragent.conf << 'FILTER'
-[Definition]
-failregex = ^<HOST> .* "." ."(?:.(?:bot|crawler|spider|curl|wget|nikto|nmap|nessus|masscan|zap|burp|sqlmap|metasploit|havij|acunetix).)" .*$
-ignoreregex =
-FILTER
-    
-    cat > filters/nginx-ddos.conf << 'FILTER'
-[Definition]
-failregex = ^<HOST> .* "." .$
-ignoreregex =
-FILTER
-    
-    sudo cp filters/*.conf /etc/fail2ban/filter.d/
-    
-    # Setup logging
-    sudo touch /var/log/fail2ban-custom.log
-    sudo chmod 640 /var/log/fail2ban-custom.log
-    
-    # Setup logrotate
-    cat > logrotate.fail2ban << 'LOGROTATE'
-/var/log/fail2ban-custom.log {
-weekly
-rotate 26
-missingok
-compress
-delaycompress
-copytruncate
-}
-LOGROTATE
-    
-    sudo tee -a /etc/logrotate.d/fail2ban > /dev/null << 'LOGROTATE'
-/var/log/fail2ban-custom.log {
-weekly
-rotate 26
-missingok
-compress
-delaycompress
-copytruncate
-}
-LOGROTATE
-    
-    print_success "Fail2Ban configuration installed"
-    
-    # Start Fail2Ban
-    sudo systemctl enable fail2ban
-    sudo systemctl restart fail2ban
-    
-    sleep 2
-    
-    if systemctl is-active --quiet fail2ban; then
-        print_success "Fail2Ban service started"
-    else
-        print_error "Fail2Ban failed to start"
-        sudo systemctl status fail2ban
-    fi
-    
-    cd - > /dev/null
-}
-
-# Create management scripts
-create_management_scripts() {
-    print_header "Creating Management Scripts"
-    
-    mkdir -p /opt/bin
-    
-    # Fail2Ban dashboard
-    cat > /opt/bin/f2b-dashboard.sh << 'SCRIPT'
-#!/bin/bash
-clear
-echo "╔════════════════════════════════════════════════════════════════════════════════╗"
-echo "║                        Fail2Ban Security Dashboard                            ║"
-echo "╚════════════════════════════════════════════════════════════════════════════════╝"
-echo
-echo "System Status: $(systemctl is-active fail2ban)"
-echo "Timestamp: $(date)"
-echo
-echo "────────────────────────────────────────────────────────────────────────────────"
-echo
-echo "PER-JAIL STATISTICS"
-echo "───────────────────"
-JAILS=("sshd" "nginx-cloudflare-only" "nginx-bad-requests" "nginx-rate-limit" "nginx-noscript" "nginx-scan" "nginx-sqli" "nginx-xss" "nginx-rfi-lfi" "nginx-baduseragent" "nginx-ddos")
-for jail in "${JAILS[@]}"; do
-    if fail2ban-client status $jail &>/dev/null 2>&1; then
-        STATUS=$(fail2ban-client status $jail 2>/dev/null)
-        BANNED=$(echo "$STATUS" | grep "Currently banned" | grep -oP '\d+(?=\s)' | tail -1)
-        echo "  $jail: $BANNED banned"
-    fi
-done
-
-echo
-echo "────────────────────────────────────────────────────────────────────────────────"
-echo
-echo "RECENTLY BANNED IPs (Last 10)"
-echo "────────────────────────────"
-tail -10 /var/log/fail2ban-custom.log 2>/dev/null | grep "BANNED" | tail -10 || echo "No recent bans"
-
-echo
-echo "────────────────────────────────────────────────────────────────────────────────"
-echo
-echo "TOP 10 OFFENDING IPs"
-echo "──────────────────"
-iptables -L -n | grep DROP | grep -v "^Chain" | awk '{print $4}' | sort | uniq -c | sort -rn | head -10 | awk '{print "  " $0}'
-
-echo
-echo "────────────────────────────────────────────────────────────────────────────────"
-echo
-echo "COMMANDS:"
-echo "  Unban IP:        /opt/bin/f2b-unban.sh <IP>"
-echo "  View logs:       tail -f /var/log/fail2ban-custom.log"
-SCRIPT
-    
-    sudo chmod +x /opt/bin/f2b-dashboard.sh
-    
-    # Unban script
-    cat > /opt/bin/f2b-unban.sh << 'SCRIPT'
-#!/bin/bash
-if [ -z "$1" ]; then
-    echo "Usage: $0 <IP_ADDRESS>"
-    exit 1
-fi
-IP=$1
-echo "Unbanning $IP..."
-JAILS=("sshd" "nginx-cloudflare-only" "nginx-bad-requests" "nginx-rate-limit" "nginx-noscript" "nginx-scan" "nginx-sqli" "nginx-xss" "nginx-rfi-lfi" "nginx-baduseragent" "nginx-ddos")
-for jail in "${JAILS[@]}"; do
-    sudo fail2ban-client set $jail unbanip $IP 2>/dev/null && echo "✓ Unbanned from $jail"
-done
-echo "[$(date '+%Y-%m-%d %H:%M:%S')] MANUAL UNBAN: $IP" | sudo tee -a /var/log/fail2ban-custom.log > /dev/null
-echo "Done"
-SCRIPT
-    
-    sudo chmod +x /opt/bin/f2b-unban.sh
-    
-    # Deploy script
-    cat > $APP_DIR/deploy.sh << 'SCRIPT'
-#!/bin/bash
-set -e
-echo "Starting deployment..."
-cd $(dirname "$0")
-echo "Pulling latest image..."
-docker pull andreastuko/esc:latest
-echo "Stopping containers..."
-docker compose -f compose.prod.yaml down
-echo "Starting new containers..."
-docker compose -f compose.prod.yaml up -d
-echo "Waiting for services..."
-sleep 30
-docker compose -f compose.prod.yaml ps
-echo "Deployment complete!"
-SCRIPT
-    
-    chmod +x $APP_DIR/deploy.sh
-    
-    # Logs script
-    cat > $APP_DIR/logs.sh << 'SCRIPT'
-#!/bin/bash
-cd $(dirname "$0")
-SERVICE=${1:-all}
-if [ "$SERVICE" = "all" ]; then
-    docker compose -f compose.prod.yaml logs -f
-else
-    docker compose -f compose.prod.yaml logs -f $SERVICE
-fi
-SCRIPT
-    
-    chmod +x $APP_DIR/logs.sh
-    
-    # Status script
-    cat > $APP_DIR/status.sh << 'SCRIPT'
-#!/bin/bash
-cd $(dirname "$0")
-echo "=== Container Status ==="
-docker compose -f compose.prod.yaml ps
-echo
-echo "=== Resource Usage ==="
-docker stats --no-stream
-SCRIPT
-    
-    chmod +x $APP_DIR/status.sh
-    
-    # Stop script
-    cat > $APP_DIR/stop.sh << 'SCRIPT'
-#!/bin/bash
-cd $(dirname "$0")
-echo "Stopping all services..."
-docker compose -f compose.prod.yaml down
-echo "Services stopped."
-SCRIPT
-    
-    chmod +x $APP_DIR/stop.sh
-    
-    # Start script
-    cat > $APP_DIR/start.sh << 'SCRIPT'
-#!/bin/bash
-cd $(dirname "$0")
-echo "Starting all services..."
-docker compose -f compose.prod.yaml up -d
-sleep 30
-docker compose -f compose.prod.yaml ps
-SCRIPT
-    
-    chmod +x $APP_DIR/start.sh
-    
-    # Security dashboard link
-    cat > $APP_DIR/security.sh << 'SCRIPT'
-#!/bin/bash
-/opt/bin/f2b-dashboard.sh
-SCRIPT
-    
-    chmod +x $APP_DIR/security.sh
-    
-    print_success "Management scripts created in $APP_DIR/ and /opt/bin/"
-}
-
-# Setup Nginx with Cloudflare protection
+# Install and configure Nginx
 install_nginx() {
     print_header "Installing and Configuring Nginx"
     
+    # Install Nginx
     if command -v nginx &> /dev/null; then
         print_warning "Nginx is already installed"
     else
@@ -1014,25 +659,34 @@ install_nginx() {
         print_success "Nginx installed"
     fi
     
-    if [ "$SETUP_SSL" = "letsencrypt" ]; then
-        setup_letsencrypt_ssl
-    elif [ "$SETUP_SSL" = "selfsigned" ]; then
-        setup_selfsigned_ssl
-    fi
-    
-    if [ "$SECURITY_ENABLED" = "true" ]; then
-        create_nginx_config_secure
+    # Check if SSL configuration already exists and matches current selection
+    if [ -f "/etc/letsencrypt/live/$DOMAIN_NAME/fullchain.pem" ] && [ "$SETUP_SSL" = "letsencrypt" ]; then
+        print_info "Let's Encrypt certificate already exists, skipping setup"
+    elif [ -f "/etc/nginx/ssl/selfsigned.crt" ] && [ "$SETUP_SSL" = "selfsigned" ]; then
+        print_info "Self-signed certificate already exists, skipping generation"
     else
-        if [ "$SETUP_SSL" != "none" ]; then
-            create_nginx_config_with_ssl
-        else
-            create_nginx_config_http_only
+        # Setup SSL if requested
+        if [ "$SETUP_SSL" = "letsencrypt" ]; then
+            setup_letsencrypt_ssl
+        elif [ "$SETUP_SSL" = "selfsigned" ]; then
+            setup_selfsigned_ssl
         fi
     fi
     
+    # Create Nginx configuration based on SSL choice
+    if [ "$SETUP_SSL" != "none" ]; then
+        create_nginx_config_with_ssl
+    else
+        create_nginx_config_http_only
+    fi
+    
+    # Enable site
     sudo ln -sf /etc/nginx/sites-available/esc /etc/nginx/sites-enabled/
+    
+    # Remove default site
     sudo rm -f /etc/nginx/sites-enabled/default
     
+    # Test configuration
     sudo nginx -t
     
     if [ $? -eq 0 ]; then
@@ -1045,325 +699,73 @@ install_nginx() {
     fi
 }
 
-# Let's Encrypt SSL setup
+# Setup Let's Encrypt SSL
 setup_letsencrypt_ssl() {
     print_header "Setting Up Let's Encrypt SSL"
     
+    # Install certbot
     if ! command -v certbot &> /dev/null; then
         print_info "Installing Certbot..."
         sudo apt install -y certbot python3-certbot-nginx
         print_success "Certbot installed"
+    else
+        print_warning "Certbot already installed"
     fi
     
+    # Stop nginx temporarily
     sudo systemctl stop nginx || true
     
-    print_info "Obtaining SSL certificate..."
+    # Obtain certificate
+    print_info "Obtaining SSL certificate from Let's Encrypt..."
+    print_warning "This requires your domain to be pointing to this server's IP"
     
     sudo certbot certonly --standalone \
         --non-interactive \
         --agree-tos \
         --email "$SSL_EMAIL" \
         -d "$DOMAIN_NAME" \
-        -d "www.$DOMAIN_NAME" || {
-        print_error "Failed to obtain certificate"
+        -d "www.$DOMAIN_NAME"
+    
+    if [ $? -eq 0 ]; then
+        print_success "SSL certificate obtained successfully"
+        
+        # Setup auto-renewal
+        print_info "Setting up automatic certificate renewal..."
+        (sudo crontab -l 2>/dev/null; echo "0 3 * * * certbot renew --quiet --post-hook 'systemctl reload nginx'") | sudo crontab -
+        print_success "Auto-renewal configured (runs daily at 3 AM)"
+    else
+        print_error "Failed to obtain SSL certificate"
+        print_warning "Falling back to HTTP-only configuration"
         SETUP_SSL="none"
-        return
-    }
-    
-    print_success "SSL certificate obtained"
-    
-    (sudo crontab -l 2>/dev/null; echo "0 3 * * * certbot renew --quiet --post-hook 'systemctl reload nginx'") | sudo crontab -
-    print_success "Auto-renewal configured"
+    fi
 }
 
-# Self-signed SSL setup
+# Setup Self-signed SSL
 setup_selfsigned_ssl() {
-    print_header "Setting Up Self-Signed SSL"
+    print_header "Setting Up Self-Signed SSL Certificate"
     
+    # Create SSL directory
     sudo mkdir -p /etc/nginx/ssl
     
-    print_info "Generating certificate..."
+    print_info "Generating self-signed SSL certificate..."
+    
+    # Generate self-signed certificate
     sudo openssl req -x509 -nodes -days 365 -newkey rsa:2048 \
         -keyout /etc/nginx/ssl/selfsigned.key \
         -out /etc/nginx/ssl/selfsigned.crt \
         -subj "/C=KE/ST=Nairobi/L=Nairobi/O=ESC/CN=$DOMAIN_NAME"
     
-    print_info "Generating Diffie-Hellman parameters..."
+    # Generate dhparam for added security
+    print_info "Generating Diffie-Hellman parameters (this may take a minute)..."
     sudo openssl dhparam -out /etc/nginx/ssl/dhparam.pem 2048
     
     print_success "Self-signed certificate created"
+    print_warning "Note: Browsers will show a security warning for self-signed certificates"
 }
 
-# Secure Nginx config with Cloudflare + Fail2Ban
-create_nginx_config_secure() {
-    print_info "Creating secure Nginx config with Cloudflare protection..."
-    
-    if [ "$SETUP_SSL" = "letsencrypt" ]; then
-        SSL_CERT="/etc/letsencrypt/live/$DOMAIN_NAME/fullchain.pem"
-        SSL_KEY="/etc/letsencrypt/live/$DOMAIN_NAME/privkey.pem"
-        OCSP_BLOCK="ssl_stapling on;
-    ssl_stapling_verify on;
-    ssl_trusted_certificate /etc/letsencrypt/live/$DOMAIN_NAME/chain.pem;"
-    elif [ "$SETUP_SSL" = "selfsigned" ]; then
-        SSL_CERT="/etc/nginx/ssl/selfsigned.crt"
-        SSL_KEY="/etc/nginx/ssl/selfsigned.key"
-        OCSP_BLOCK="ssl_dhparam /etc/nginx/ssl/dhparam.pem;"
-    else
-        SSL_CERT=""
-        SSL_KEY=""
-        OCSP_BLOCK=""
-    fi
-    
-    # Build Cloudflare IPs list
-    cat > /tmp/nginx_esc.conf << 'NGINX'
-# Cloudflare IP geo-block
-geo $is_cloudflare {
-    default 0;
-    173.245.48.0/20 1;
-    103.21.244.0/22 1;
-    103.22.200.0/22 1;
-    103.31.4.0/22 1;
-    141.101.64.0/18 1;
-    108.162.192.0/18 1;
-    190.93.240.0/20 1;
-    188.114.96.0/20 1;
-    197.234.240.0/22 1;
-    198.41.128.0/17 1;
-    162.158.0.0/15 1;
-    104.16.0.0/13 1;
-    104.24.0.0/14 1;
-    172.64.0.0/13 1;
-    131.0.72.0/22 1;
-    2400:cb00::/32 1;
-    2606:4700::/32 1;
-    2803:f800::/32 1;
-    2405:b500::/32 1;
-    2405:8100::/32 1;
-    2a06:98c0::/29 1;
-    2c0f:f248::/32 1;
-}
-
-# Rate limiting zones
-limit_req_zone $binary_remote_addr zone=general_limit:10m rate=10r/s;
-limit_req_zone $binary_remote_addr zone=api_limit:10m rate=30r/m;
-limit_req_zone $binary_remote_addr zone=login_limit:10m rate=5r/m;
-limit_req_status 429;
-
-# Connection limiting
-limit_conn_zone $binary_remote_addr zone=addr:10m;
-
-upstream django_app {
-    server 127.0.0.1:8000;
-    keepalive 64;
-}
-
-# Default catch-all server - block non-Cloudflare
-server {
-    listen 80 default_server;
-    listen [::]:80 default_server;
-    listen 443 ssl http2 default_server;
-    listen [::]:443 ssl http2 default_server;
-    
-    server_name _;
-NGINX
-    
-    if [ -n "$SSL_CERT" ]; then
-        cat >> /tmp/nginx_esc.conf << NGINX
-    ssl_certificate $SSL_CERT;
-    ssl_certificate_key $SSL_KEY;
-NGINX
-    fi
-    
-    cat >> /tmp/nginx_esc.conf << 'NGINX'
-    
-    if ($is_cloudflare = 0) {
-        return 403;
-    }
-    
-    location / {
-        return 403;
-    }
-}
-
-# HTTP Server
-server {
-    listen 80;
-    listen [::]:80;
-    server_name DOMAIN_NAME www.DOMAIN_NAME;
-    
-    if ($is_cloudflare = 0) {
-        return 403;
-    }
-    
-    location /.well-known/acme-challenge/ {
-        root /var/www/html;
-    }
-    
-    location / {
-        return 301 https://$host$request_uri;
-    }
-}
-
-# HTTPS Server
-server {
-    listen 443 ssl http2;
-    listen [::]:443 ssl http2;
-    server_name DOMAIN_NAME www.DOMAIN_NAME;
-    
-    if ($is_cloudflare = 0) {
-        return 403;
-    }
-NGINX
-    
-    if [ -n "$SSL_CERT" ]; then
-        cat >> /tmp/nginx_esc.conf << NGINX
-    
-    ssl_certificate $SSL_CERT;
-    ssl_certificate_key $SSL_KEY;
-    ssl_protocols TLSv1.2 TLSv1.3;
-    ssl_ciphers ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384;
-    ssl_prefer_server_ciphers off;
-    ssl_session_cache shared:SSL:10m;
-    ssl_session_timeout 10m;
-    ssl_session_tickets off;
-    
-    add_header Strict-Transport-Security "max-age=31536000; includeSubDomains; preload" always;
-    $OCSP_BLOCK
-NGINX
-    fi
-    
-    cat >> /tmp/nginx_esc.conf << 'NGINX'
-    
-    add_header X-Frame-Options "SAMEORIGIN" always;
-    add_header X-Content-Type-Options "nosniff" always;
-    add_header X-XSS-Protection "1; mode=block" always;
-    add_header Referrer-Policy "strict-origin-when-cross-origin" always;
-    add_header Permissions-Policy "geolocation=(), microphone=(), camera=()" always;
-    
-    access_log /var/log/nginx/esc_access.log;
-    error_log /var/log/nginx/esc_error.log;
-    
-    client_max_body_size 100M;
-    client_body_buffer_size 128k;
-    client_header_buffer_size 1k;
-    large_client_header_buffers 4 16k;
-    
-    proxy_connect_timeout 600s;
-    proxy_send_timeout 600s;
-    proxy_read_timeout 600s;
-    send_timeout 600s;
-    
-    if ($request_method !~ ^(GET|HEAD|POST|PUT|DELETE|OPTIONS)$) {
-        return 405;
-    }
-    
-    location ~ /\. {
-        deny all;
-        access_log off;
-        log_not_found off;
-    }
-    
-    location ~ /\.env {
-        deny all;
-        access_log off;
-        log_not_found off;
-    }
-    
-    location ~ ^/(wp-admin|wp-login|admin\.php|administrator|phpmyadmin) {
-        deny all;
-        access_log off;
-        log_not_found off;
-    }
-    
-    location = /xmlrpc.php {
-        deny all;
-        access_log off;
-        log_not_found off;
-    }
-    
-    location ~ \.(bak|backup|old|tar|zip|sql|db)$ {
-        deny all;
-        access_log off;
-        log_not_found off;
-    }
-    
-    location / {
-        limit_req zone=general_limit burst=20 nodelay;
-        limit_conn addr 10;
-        
-        real_ip_header CF-Connecting-IP;
-        
-        proxy_pass http://django_app;
-        proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto $scheme;
-        proxy_set_header CF-Connecting-IP $remote_addr;
-        
-        proxy_http_version 1.1;
-        proxy_set_header Upgrade $http_upgrade;
-        proxy_set_header Connection "upgrade";
-        proxy_buffering off;
-    }
-    
-    location /api/ {
-        limit_req zone=api_limit burst=5 nodelay;
-        limit_conn addr 5;
-        
-        proxy_pass http://django_app;
-        proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto $scheme;
-    }
-    
-    location ~ ^/(account|auth|login|signin) {
-        limit_req zone=login_limit burst=2 nodelay;
-        limit_conn addr 3;
-        
-        proxy_pass http://django_app;
-        proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto $scheme;
-    }
-    
-    location /health {
-        access_log off;
-        proxy_pass http://django_app;
-        proxy_set_header Host $host;
-        proxy_connect_timeout 5s;
-        proxy_read_timeout 5s;
-    }
-    
-    location /health/ready/ {
-        access_log off;
-        proxy_pass http://django_app;
-        proxy_set_header Host $host;
-        proxy_connect_timeout 5s;
-        proxy_read_timeout 5s;
-    }
-    
-    location = /robots.txt {
-        access_log off;
-        log_not_found off;
-    }
-}
-NGINX
-    
-    # Replace domain placeholder
-    sed -i "s/DOMAIN_NAME/$DOMAIN_NAME/g" /tmp/nginx_esc.conf
-    
-    sudo cp /tmp/nginx_esc.conf /etc/nginx/sites-available/esc
-    sudo chown root:root /etc/nginx/sites-available/esc
-    sudo chmod 644 /etc/nginx/sites-available/esc
-    
-    print_success "Nginx secure config created"
-}
-
-# Nginx config with SSL (non-Cloudflare)
+# Create Nginx config with SSL
 create_nginx_config_with_ssl() {
-    print_info "Creating Nginx config with SSL..."
+    print_info "Creating Nginx configuration with SSL..."
     
     if [ "$SETUP_SSL" = "letsencrypt" ]; then
         SSL_CERT="/etc/letsencrypt/live/$DOMAIN_NAME/fullchain.pem"
@@ -1379,70 +781,129 @@ upstream django_app {
     keepalive 64;
 }
 
+# HTTP server - redirect to HTTPS
 server {
     listen 80;
     listen [::]:80;
     server_name $DOMAIN_NAME www.$DOMAIN_NAME;
     
+    # Allow Let's Encrypt challenges
     location /.well-known/acme-challenge/ {
         root /var/www/html;
     }
     
+    # Redirect all other traffic to HTTPS
     location / {
         return 301 https://\$host\$request_uri;
     }
 }
 
+# HTTPS server
 server {
     listen 443 ssl http2;
     listen [::]:443 ssl http2;
     server_name $DOMAIN_NAME www.$DOMAIN_NAME;
-    
+
+    # SSL Configuration
     ssl_certificate $SSL_CERT;
     ssl_certificate_key $SSL_KEY;
+    
+    # SSL Security Settings
     ssl_protocols TLSv1.2 TLSv1.3;
-    ssl_ciphers HIGH:!aNULL:!MD5;
-    ssl_prefer_server_ciphers on;
+    ssl_ciphers 'ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384';
+    ssl_prefer_server_ciphers off;
     ssl_session_cache shared:SSL:10m;
     ssl_session_timeout 10m;
+EOF
+
+    if [ "$SETUP_SSL" = "selfsigned" ]; then
+        sudo tee -a /etc/nginx/sites-available/esc > /dev/null << EOF
+    ssl_dhparam /etc/nginx/ssl/dhparam.pem;
+EOF
+    fi
+
+    if [ "$SETUP_SSL" = "letsencrypt" ]; then
+        sudo tee -a /etc/nginx/sites-available/esc > /dev/null << EOF
     
+    # OCSP Stapling
+    ssl_stapling on;
+    ssl_stapling_verify on;
+    ssl_trusted_certificate /etc/letsencrypt/live/$DOMAIN_NAME/chain.pem;
+EOF
+    fi
+
+    sudo tee -a /etc/nginx/sites-available/esc > /dev/null << 'EOF'
+
+    # Security headers
+    add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;
     add_header X-Frame-Options "SAMEORIGIN" always;
     add_header X-Content-Type-Options "nosniff" always;
     add_header X-XSS-Protection "1; mode=block" always;
-    
+    add_header Referrer-Policy "strict-origin-when-cross-origin" always;
+
+    # Logging
     access_log /var/log/nginx/esc_access.log;
     error_log /var/log/nginx/esc_error.log;
-    
+
+    # Client body size limit
     client_max_body_size 100M;
+
+    # Timeouts
     proxy_connect_timeout 600s;
     proxy_send_timeout 600s;
     proxy_read_timeout 600s;
-    
+
     location / {
         proxy_pass http://django_app;
-        proxy_set_header Host \$host;
-        proxy_set_header X-Real-IP \$remote_addr;
-        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto \$scheme;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        
+        # WebSocket support
         proxy_http_version 1.1;
-        proxy_set_header Upgrade \$http_upgrade;
+        proxy_set_header Upgrade $http_upgrade;
         proxy_set_header Connection "upgrade";
+        
+        # Cloudflare real IP
+        set_real_ip_from 173.245.48.0/20;
+        set_real_ip_from 103.21.244.0/22;
+        set_real_ip_from 103.22.200.0/22;
+        set_real_ip_from 103.31.4.0/22;
+        set_real_ip_from 141.101.64.0/18;
+        set_real_ip_from 108.162.192.0/18;
+        set_real_ip_from 190.93.240.0/20;
+        set_real_ip_from 188.114.96.0/20;
+        set_real_ip_from 197.234.240.0/22;
+        set_real_ip_from 198.41.128.0/17;
+        set_real_ip_from 162.158.0.0/15;
+        set_real_ip_from 104.16.0.0/13;
+        set_real_ip_from 104.24.0.0/14;
+        set_real_ip_from 172.64.0.0/13;
+        set_real_ip_from 131.0.72.0/22;
+        set_real_ip_from 2400:cb00::/32;
+        set_real_ip_from 2606:4700::/32;
+        set_real_ip_from 2803:f800::/32;
+        set_real_ip_from 2405:b500::/32;
+        set_real_ip_from 2405:8100::/32;
+        set_real_ip_from 2a06:98c0::/29;
+        set_real_ip_from 2c0f:f248::/32;
+        real_ip_header CF-Connecting-IP;
     }
-    
+
+    # Health check endpoint
     location /health {
         access_log off;
         proxy_pass http://django_app;
-        proxy_set_header Host \$host;
+        proxy_set_header Host $host;
     }
 }
 EOF
-    
-    print_success "Nginx config created"
 }
 
-# Nginx HTTP-only config
+# Create Nginx config HTTP only (original)
 create_nginx_config_http_only() {
-    print_info "Creating HTTP-only Nginx config..."
+    print_info "Creating Nginx configuration (HTTP only)..."
     
     sudo tee /etc/nginx/sites-available/esc > /dev/null << EOF
 upstream django_app {
@@ -1454,29 +915,63 @@ server {
     listen 80;
     listen [::]:80;
     server_name $DOMAIN_NAME www.$DOMAIN_NAME;
-    
+
+    # Security headers
     add_header X-Frame-Options "SAMEORIGIN" always;
     add_header X-Content-Type-Options "nosniff" always;
-    
+    add_header X-XSS-Protection "1; mode=block" always;
+
+    # Logging
     access_log /var/log/nginx/esc_access.log;
     error_log /var/log/nginx/esc_error.log;
-    
+
+    # Client body size limit
     client_max_body_size 100M;
+
+    # Timeouts
     proxy_connect_timeout 600s;
     proxy_send_timeout 600s;
     proxy_read_timeout 600s;
-    
+
     location / {
         proxy_pass http://django_app;
         proxy_set_header Host \$host;
         proxy_set_header X-Real-IP \$remote_addr;
         proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto \$scheme;
+        
+        # WebSocket support
         proxy_http_version 1.1;
         proxy_set_header Upgrade \$http_upgrade;
         proxy_set_header Connection "upgrade";
+        
+        # Cloudflare real IP
+        set_real_ip_from 173.245.48.0/20;
+        set_real_ip_from 103.21.244.0/22;
+        set_real_ip_from 103.22.200.0/22;
+        set_real_ip_from 103.31.4.0/22;
+        set_real_ip_from 141.101.64.0/18;
+        set_real_ip_from 108.162.192.0/18;
+        set_real_ip_from 190.93.240.0/20;
+        set_real_ip_from 188.114.96.0/20;
+        set_real_ip_from 197.234.240.0/22;
+        set_real_ip_from 198.41.128.0/17;
+        set_real_ip_from 162.158.0.0/15;
+        set_real_ip_from 104.16.0.0/13;
+        set_real_ip_from 104.24.0.0/14;
+        set_real_ip_from 172.64.0.0/13;
+        set_real_ip_from 131.0.72.0/22;
+        set_real_ip_from 2400:cb00::/32;
+        set_real_ip_from 2606:4700::/32;
+        set_real_ip_from 2803:f800::/32;
+        set_real_ip_from 2405:b500::/32;
+        set_real_ip_from 2405:8100::/32;
+        set_real_ip_from 2a06:98c0::/29;
+        set_real_ip_from 2c0f:f248::/32;
+        real_ip_header CF-Connecting-IP;
     }
-    
+
+    # Health check endpoint
     location /health {
         access_log off;
         proxy_pass http://django_app;
@@ -1484,23 +979,6 @@ server {
     }
 }
 EOF
-    
-    print_success "Nginx HTTP config created"
-}
-
-# Setup firewall
-setup_firewall() {
-    if [[ "$SETUP_FIREWALL" =~ ^[Yy]$ ]]; then
-        print_header "Configuring UFW Firewall"
-        
-        sudo ufw allow 22/tcp
-        sudo ufw allow 80/tcp
-        sudo ufw allow 443/tcp
-        sudo ufw --force enable
-        
-        print_success "Firewall configured"
-        sudo ufw status
-    fi
 }
 
 # Setup systemd service
@@ -1528,7 +1006,159 @@ EOF
     sudo systemctl daemon-reload
     sudo systemctl enable esc.service
     
-    print_success "Systemd service created"
+    print_success "Systemd service created and enabled"
+}
+
+# Setup firewall
+setup_firewall() {
+    if [[ "$SETUP_FIREWALL" =~ ^[Yy]$ ]]; then
+        print_header "Configuring UFW Firewall"
+        
+        # Allow SSH
+        sudo ufw allow 22/tcp
+        print_info "Allowed SSH (port 22)"
+        
+        # Allow HTTP and HTTPS
+        sudo ufw allow 80/tcp
+        sudo ufw allow 443/tcp
+        print_info "Allowed HTTP (port 80) and HTTPS (port 443)"
+        
+        # Enable firewall
+        sudo ufw --force enable
+        
+        print_success "Firewall configured"
+        sudo ufw status
+    fi
+}
+
+# Create management scripts
+create_management_scripts() {
+    print_header "Creating Management Scripts"
+    
+    # Deploy script
+    cat > $APP_DIR/deploy.sh << 'EOF'
+#!/bin/bash
+set -e
+
+echo "Starting deployment..."
+
+cd $(dirname "$0")
+
+# Pull latest image
+echo "Pulling latest image..."
+docker pull andreastuko/esc:latest
+
+# Stop and remove old containers
+echo "Stopping containers..."
+docker compose -f compose.prod.yaml down
+
+# Start new containers
+echo "Starting new containers..."
+docker compose -f compose.prod.yaml up -d
+
+# Wait for health checks
+echo "Waiting for services to be healthy..."
+sleep 30
+
+# Check status
+docker compose -f compose.prod.yaml ps
+
+echo "Deployment complete!"
+EOF
+    
+    chmod +x $APP_DIR/deploy.sh
+    
+    # Logs script
+    cat > $APP_DIR/logs.sh << 'EOF'
+#!/bin/bash
+
+cd $(dirname "$0")
+
+SERVICE=${1:-all}
+
+if [ "$SERVICE" = "all" ]; then
+    docker compose -f compose.prod.yaml logs -f
+else
+    docker compose -f compose.prod.yaml logs -f $SERVICE
+fi
+EOF
+    
+    chmod +x $APP_DIR/logs.sh
+    
+    # Status script
+    cat > $APP_DIR/status.sh << 'EOF'
+#!/bin/bash
+
+cd $(dirname "$0")
+
+echo "=== Container Status ==="
+docker compose -f compose.prod.yaml ps
+echo
+
+echo "=== Resource Usage ==="
+docker stats --no-stream
+echo
+
+echo "=== Nginx Status ==="
+sudo systemctl status nginx --no-pager
+EOF
+    
+    chmod +x $APP_DIR/status.sh
+    
+    # Stop script
+    cat > $APP_DIR/stop.sh << 'EOF'
+#!/bin/bash
+
+cd $(dirname "$0")
+
+echo "Stopping all services..."
+docker compose -f compose.prod.yaml down
+
+echo "Services stopped."
+EOF
+    
+    chmod +x $APP_DIR/stop.sh
+    
+    # Start script
+    cat > $APP_DIR/start.sh << 'EOF'
+#!/bin/bash
+
+cd $(dirname "$0")
+
+echo "Starting all services..."
+docker compose -f compose.prod.yaml up -d
+
+echo "Services started. Waiting for health checks..."
+sleep 30
+
+docker compose -f compose.prod.yaml ps
+EOF
+    
+    chmod +x $APP_DIR/start.sh
+    
+    # Restart configuration script
+    cat > $APP_DIR/reconfig.sh << 'EOF'
+#!/bin/bash
+
+cd $(dirname "$0")
+
+echo "Opening environment configuration..."
+nano .env.docker
+
+echo ""
+read -p "Restart application with new configuration? [Y/n]: " RESTART
+RESTART=${RESTART:-Y}
+
+if [[ "$RESTART" =~ ^[Yy]$ ]]; then
+    ./deploy.sh
+else
+    echo "Configuration saved. Run './deploy.sh' to apply changes."
+fi
+EOF
+    
+    chmod +x $APP_DIR/reconfig.sh
+    
+    print_success "Management scripts created"
 }
 
 # Pull and start application
@@ -1537,100 +1167,119 @@ start_application() {
     
     cd $APP_DIR
     
+    # Pull latest image
     print_info "Pulling latest Docker image..."
     docker pull andreastuko/esc:latest
     
+    # Start services
     print_info "Starting services..."
     docker compose -f compose.prod.yaml up -d
     
-    print_info "Waiting for services to start..."
+    # Wait for services to be healthy
+    print_info "Waiting for services to start (this may take a few minutes)..."
     
+    # Show progress
     for i in {1..12}; do
         sleep 5
         echo -n "."
     done
     echo
     
+    # Check status
     docker compose -f compose.prod.yaml ps
     
-    print_success "Application started"
+    # Check if web service is healthy
+    WEB_STATUS=$(docker compose -f compose.prod.yaml ps web --format json 2>/dev/null | grep -o '"Health":"[^"]*"' | cut -d'"' -f4)
+    
+    if [ "$WEB_STATUS" = "healthy" ]; then
+        print_success "Application started successfully!"
+    else
+        print_warning "Application started but health check is pending..."
+        print_info "Run './logs.sh web' to check application logs"
+    fi
 }
 
 # Print completion message
 print_completion() {
     print_header "Installation Complete!"
     
-    echo -e "${GREEN}Your ESC Django application is fully deployed with security hardening!${NC}\n"
+    echo -e "${GREEN}Your ESC Django application is now deployed!${NC}\n"
     
     echo "Application Details:"
-    echo "  Domain: https://$DOMAIN_NAME"
+    echo "  Domain: http://$DOMAIN_NAME"
     echo "  App Directory: $APP_DIR"
-    echo "  Environment: $APP_DIR/.env.docker"
+    echo "  Environment File: $APP_DIR/.env.docker"
+    echo
+    
+    echo "Important Next Steps:"
+    echo "  1. Configure Cloudflare (if using):"
+    echo "     - Set SSL/TLS to 'Full (strict)' if using Let's Encrypt"
+    echo "     - Set SSL/TLS to 'Flexible' if not using server SSL"
+    echo "     - Enable 'Always Use HTTPS'"
+    echo "     - Add A record pointing to this server's IP"
+    echo
+    
+    if [ "$SETUP_SSL" = "letsencrypt" ]; then
+        echo "  SSL Certificate Info:"
+        echo "     - Let's Encrypt certificate installed"
+        echo "     - Auto-renewal configured (daily at 3 AM)"
+        echo "     - Access via: https://$DOMAIN_NAME"
+        echo
+    elif [ "$SETUP_SSL" = "selfsigned" ]; then
+        echo "  SSL Certificate Info:"
+        echo "     - Self-signed certificate installed"
+        echo "     - Browsers will show security warnings"
+        echo "     - Access via: https://$DOMAIN_NAME"
+        echo "     - Also works with IP: https://YOUR_SERVER_IP"
+        echo
+    else
+        echo "  Note: Using HTTP only. Enable SSL via Cloudflare for production."
+        echo
+    fi
+    echo "  2. If you need to update configuration:"
+    echo "     cd $APP_DIR && ./reconfig.sh"
+    echo
+    echo "  3. Create a Django superuser (admin):"
+    echo "     cd $APP_DIR"
+    echo "     docker compose -f compose.prod.yaml exec web python manage.py createsuperuser"
     echo
     
     echo "Management Commands:"
-    echo "  Deploy/Update:    $APP_DIR/deploy.sh"
-    echo "  View Logs:        $APP_DIR/logs.sh [service]"
-    echo "  Check Status:     $APP_DIR/status.sh"
-    echo "  Stop Services:    $APP_DIR/stop.sh"
-    echo "  Start Services:   $APP_DIR/start.sh"
-    echo "  Security Status:  $APP_DIR/security.sh"
+    echo "  Deploy/Update:     cd $APP_DIR && ./deploy.sh"
+    echo "  View Logs:         cd $APP_DIR && ./logs.sh [service_name]"
+    echo "  Check Status:      cd $APP_DIR && ./status.sh"
+    echo "  Stop App:          cd $APP_DIR && ./stop.sh"
+    echo "  Start App:         cd $APP_DIR && ./start.sh"
+    echo "  Reconfigure:       cd $APP_DIR && ./reconfig.sh"
     echo
     
-    if [ "$SECURITY_ENABLED" = "true" ]; then
-        echo -e "${GREEN}Security Features Enabled:${NC}"
-        echo "  ✓ Cloudflare-only IP enforcement (geo-blocking)"
-        echo "  ✓ Multi-jail Fail2Ban protection"
-        echo "  ✓ Rate limiting (10 req/s general, 5 req/min login)"
-        echo "  ✓ Vulnerability scanner detection"
-        echo "  ✓ SQL injection/XSS protection"
-        echo "  ✓ DDoS detection and mitigation"
-        echo "  ✓ Bad bot blocking"
-        echo "  ✓ Automatic threat response"
-        echo
-        
-        echo "Security Management:"
-        echo "  Dashboard:       /opt/bin/f2b-dashboard.sh"
-        echo "  Unban IP:        /opt/bin/f2b-unban.sh <IP>"
-        echo "  Monitor logs:    tail -f /var/log/fail2ban-custom.log"
-        echo "  Check bans:      iptables -L -n | grep DROP"
-        echo
-        
-        echo "Important Security Notes:"
-        echo "  • Non-Cloudflare IPs are blocked with 403"
-        echo "  • SQL injection = 30-day permanent ban"
-        echo "  • Scanner detected = 14-30 day ban"
-        echo "  • Direct IP access = 30-day permanent ban"
-        echo "  • All bans logged in /var/log/fail2ban-custom.log"
-        echo
+    echo "Service-specific logs:"
+    echo "  Web:               ./logs.sh web"
+    echo "  Worker:            ./logs.sh celery_worker"
+    echo "  Beat:              ./logs.sh celery_beat"
+    echo "  Redis:             ./logs.sh redis"
+    echo
+    
+    echo "System Services:"
+    echo "  Restart Nginx:     sudo systemctl restart nginx"
+    echo "  Nginx Logs:        sudo tail -f /var/log/nginx/esc_error.log"
+    echo
+    
+    print_warning "IMPORTANT: You may need to log out and back in for Docker group changes to take effect"
+    print_warning "           Or run: newgrp docker"
+    echo
+    
+    print_info "Visit your website at: http://$DOMAIN_NAME"
+    if [ "$SETUP_SSL" != "none" ]; then
+        print_info "Or via HTTPS: https://$DOMAIN_NAME"
     fi
-    
-    echo "Cloudflare Setup:"
-    echo "  1. Add A record pointing to: $(hostname -I | awk '{print $1}')"
-    echo "  2. Set SSL/TLS to: 'Full (strict)' (if using Let's Encrypt) or 'Flexible'"
-    echo "  3. Enable: 'Always Use HTTPS'"
-    echo "  4. Test: curl -I https://$DOMAIN_NAME"
+    print_info "(It may take 2-3 minutes for all services to be fully ready)"
     echo
-    
-    echo -e "${YELLOW}Next Steps:${NC}"
-    echo "  1. Create Django superuser:"
-    echo "     cd $APP_DIR && docker compose -f compose.prod.yaml exec web python manage.py createsuperuser"
-    echo "  2. Monitor logs for 24 hours"
-    echo "  3. Test legitimate traffic"
-    echo "  4. Review banned IPs in security dashboard"
-    echo
-    
-    echo -e "${CYAN}View documentation:${NC}"
-    echo "  cd $APP_DIR"
-    echo "  ls -la docs/"
-    echo
-    
-    print_warning "You may need to log out and back in for Docker group changes"
 }
 
 # Main installation flow
 main() {
-    print_header "ESC Django Application - Automated Deployment with Security"
+    print_header "ESC Django Application - Automated Deployment"
     
     check_sudo
     check_os
@@ -1643,19 +1292,15 @@ main() {
     clone_repository
     docker_login
     setup_env_file
-    
-    if [ "$SECURITY_ENABLED" = "true" ]; then
-        install_fail2ban
-        setup_fail2ban
-    fi
-    
     install_nginx
     setup_systemd
     setup_firewall
     create_management_scripts
     
+    # Save configuration for future runs
     save_config
     
+    # Ask if user wants to start now
     print_header "Ready to Start Application"
     print_info "All configuration is complete!"
     echo
@@ -1665,7 +1310,7 @@ main() {
     if [[ "$START_NOW" =~ ^[Yy]$ ]]; then
         start_application
     else
-        print_info "Run '$APP_DIR/start.sh' when ready"
+        print_info "Application not started. Run './start.sh' when ready."
     fi
     
     print_completion
