@@ -81,8 +81,7 @@ services:
       start_period: 5s
     security_opt:
       - no-new-privileges:true
-    labels:
-      - "com.centurylinklabs.watchtower.enable=true"
+    
 
   celery_worker:
     image: andreastuko/esc:latest
