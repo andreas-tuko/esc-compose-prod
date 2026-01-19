@@ -1,8 +1,8 @@
 #!/bin/bash
 
 # ESC Django Application - Automated Deployment Script
-# Cloudflare handles all SSL - this script uses HTTP only
-# Includes: Docker, Nginx, Fail2Ban, Rate Limiting, and Threat Detection
+# Cloudflare handles all SSL - Nginx runs in Docker
+# Includes: Docker, Nginx in Container, Fail2Ban, Rate Limiting, Threat Detection
 
 set -e
 
@@ -233,7 +233,8 @@ gather_config() {
     echo "App Directory: $APP_DIR"
     echo "Create deployer user: $CREATE_USER"
     echo "Setup firewall: $SETUP_FIREWALL"
-    echo "SSL: Handled by Cloudflare (HTTP only locally)"
+    echo "SSL: Handled by Cloudflare (HTTP in Docker)"
+    echo "Nginx: Running in Docker container"
     echo "Security Features: $SECURITY_ENABLED"
     if [ "$SECURITY_ENABLED" = "true" ]; then
         echo "Admin Email: $ADMIN_EMAIL"
@@ -323,7 +324,7 @@ clone_repository() {
     
     if [ -d ".git" ]; then
         print_warning "Repository already exists, pulling latest changes..."
-        git pull origin main || git pull origin master
+        git pull origin main 2>/dev/null || git pull origin master 2>/dev/null || true
     else
         print_info "Cloning from GitHub..."
         git clone https://github.com/andreas-tuko/esc-compose-prod.git .
@@ -702,7 +703,7 @@ fi
 echo
 echo "COMMANDS:"
 echo "  View Fail2Ban logs:  sudo journalctl -u fail2ban -f"
-echo "  Check Nginx logs:    sudo tail -f /var/log/nginx/esc_error.log"
+echo "  Check Docker logs:   docker logs nginx"
 SCRIPT
     
     sudo chmod +x /opt/bin/f2b-dashboard.sh
@@ -734,8 +735,8 @@ SCRIPT
 set -e
 echo "Starting deployment..."
 cd "$(dirname "$0")" || exit 1
-echo "Pulling latest image..."
-docker pull andreastuko/esc:latest || { echo "Failed to pull image"; exit 1; }
+echo "Pulling latest images..."
+docker compose -f compose.prod.yaml pull || { echo "Failed to pull images"; exit 1; }
 echo "Stopping containers..."
 docker compose -f compose.prod.yaml down || true
 echo "Starting new containers..."
@@ -809,52 +810,31 @@ SCRIPT
     print_success "Management scripts created in $APP_DIR/ and /opt/bin/"
 }
 
-# Install and configure Nginx
-install_nginx() {
-    print_header "Installing and Configuring Nginx"
+# Create updated docker compose with Nginx
+update_docker_compose() {
+    print_header "Updating Docker Compose with Nginx Service"
     
-    if command -v nginx &> /dev/null; then
-        print_warning "Nginx is already installed"
-    else
-        sudo apt install -y nginx
-        print_success "Nginx installed"
-    fi
-    
-    # Create log files
-    sudo touch /var/log/nginx/esc_access.log
-    sudo touch /var/log/nginx/esc_error.log
-    sudo chown www-data:adm /var/log/nginx/esc_*.log
-    sudo chmod 644 /var/log/nginx/esc_*.log
-    
-    create_nginx_config
-    
-    sudo ln -sf /etc/nginx/sites-available/esc /etc/nginx/sites-enabled/
-    sudo rm -f /etc/nginx/sites-enabled/default
-    
-    if sudo nginx -t; then
-        sudo systemctl restart nginx
-        sudo systemctl enable nginx
-        print_success "Nginx configured and started"
-    else
-        print_error "Nginx configuration test failed"
-        sudo nginx -t 2>&1 | tail -20
+    if [ ! -f "$APP_DIR/compose.prod.yaml" ]; then
+        print_error "compose.prod.yaml not found in $APP_DIR"
         exit 1
     fi
-}
-
-# Create Nginx configuration
-create_nginx_config() {
-    print_info "Creating Nginx configuration..."
     
-    sudo tee /etc/nginx/sites-available/esc > /dev/null << 'EOF'
+    # Backup original
+    cp "$APP_DIR/compose.prod.yaml" "$APP_DIR/compose.prod.yaml.backup.$(date +%Y%m%d_%H%M%S)"
+    
+    # Create Nginx config file
+    mkdir -p "$APP_DIR/nginx"
+    
+    cat > "$APP_DIR/nginx/nginx.conf" << 'EOF'
 # Rate limiting zones
 limit_req_zone $binary_remote_addr zone=general_limit:10m rate=10r/s;
 limit_req_zone $binary_remote_addr zone=api_limit:10m rate=30r/m;
 limit_req_zone $binary_remote_addr zone=login_limit:10m rate=5r/m;
 limit_req_status 429;
 
+# Point to Django app container
 upstream django_app {
-    server 127.0.0.1:8000;
+    server web:8000;
     keepalive 64;
 }
 
@@ -915,11 +895,11 @@ server {
     location / {
         limit_req zone=general_limit burst=20 nodelay;
         
-        proxy_pass http://django_app;
+    proxy_pass http://django_app;
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header X-Forwarded-Proto http;
         proxy_set_header X-Forwarded-Host $host;
         
         proxy_http_version 1.1;
@@ -936,7 +916,7 @@ server {
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header X-Forwarded-Proto http;
     }
     
     # Authentication endpoints with strict rate limiting
@@ -947,7 +927,7 @@ server {
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header X-Forwarded-Proto http;
     }
     
     # Health check endpoint
@@ -974,6 +954,41 @@ server {
 EOF
     
     print_success "Nginx config created"
+    
+    # Now check if we need to add nginx service to docker compose
+    if ! grep -q "nginx:" "$APP_DIR/compose.prod.yaml"; then
+        print_warning "Adding Nginx service to docker-compose.yml..."
+        
+        # This is a simplified approach - the user might need to manually add it
+        cat >> "$APP_DIR/compose.prod.yaml" << 'EOF'
+
+  nginx:
+    image: nginx:alpine
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/conf.d/default.conf:ro
+      - /var/log/nginx:/var/log/nginx
+    depends_on:
+      - web
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 5s
+    security_opt:
+      - no-new-privileges:true
+    labels:
+      - "com.centurylinklabs.watchtower.enable=true"
+EOF
+        
+        print_success "Nginx service added to compose file"
+    else
+        print_info "Nginx service already in compose file"
+    fi
 }
 
 # Setup firewall
@@ -990,7 +1005,7 @@ setup_firewall() {
         sudo ufw allow 80/tcp
         sudo ufw allow 443/tcp
         
-        echo "y" | sudo ufw enable
+        echo "y" | sudo ufw enable > /dev/null 2>&1
         
         print_success "Firewall configured"
         sudo ufw status verbose
@@ -1003,7 +1018,7 @@ setup_systemd() {
     
     sudo tee /etc/systemd/system/esc.service > /dev/null << EOF
 [Unit]
-Description=ESC Django Application
+Description=ESC Django Application with Nginx
 Requires=docker.service
 After=docker.service network.target
 
@@ -1035,11 +1050,11 @@ start_application() {
     
     cd "$APP_DIR" || exit 1
     
-    print_info "Pulling latest Docker image..."
-    if ! docker pull andreastuko/esc:latest; then
-        print_warning "Failed to pull Docker image, continuing with existing image..."
+    print_info "Pulling latest Docker images..."
+    if ! docker compose -f compose.prod.yaml pull; then
+        print_warning "Failed to pull Docker images, continuing with existing images..."
     else
-        print_success "Docker image pulled successfully"
+        print_success "Docker images pulled successfully"
     fi
     
     print_info "Starting services..."
@@ -1075,9 +1090,10 @@ print_completion() {
     echo -e "${GREEN}Your ESC Django application is fully deployed!${NC}\n"
     
     echo "Application Details:"
-    echo "  Domain: http://$DOMAIN_NAME (Cloudflare will handle HTTPS)"
+    echo "  Domain: http://$DOMAIN_NAME (Cloudflare handles HTTPS)"
     echo "  App Directory: $APP_DIR"
     echo "  Environment: $APP_DIR/.env.docker"
+    echo "  Nginx Config: $APP_DIR/nginx/nginx.conf"
     echo
     
     echo "Management Commands:"
@@ -1086,6 +1102,7 @@ print_completion() {
     echo "  Check Status:     $APP_DIR/status.sh"
     echo "  Stop Services:    $APP_DIR/stop.sh"
     echo "  Start Services:   $APP_DIR/start.sh"
+    echo "  Nginx Config:     Edit $APP_DIR/nginx/nginx.conf then run deploy.sh"
     
     if [ "$SECURITY_ENABLED" = "true" ]; then
         echo "  Security Status:  $APP_DIR/security.sh"
@@ -1139,7 +1156,7 @@ main() {
     docker_login
     setup_env_file
     
-    install_nginx
+    update_docker_compose
     
     if [ "$SECURITY_ENABLED" = "true" ]; then
         install_fail2ban
