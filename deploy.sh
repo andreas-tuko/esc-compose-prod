@@ -2,7 +2,7 @@
 
 # ESC Django Application - Automated Deployment Script
 # Cloudflare handles all SSL - Nginx runs in Docker
-# Includes: Docker, Nginx in Container, Fail2Ban, Rate Limiting, Threat Detection
+# Includes: Docker, Nginx in Container, Fail2Ban, Rate Limiting
 
 set -e
 
@@ -68,6 +68,27 @@ check_os() {
     fi
 }
 
+# Remove conflicting Nginx on host
+remove_host_nginx() {
+    print_header "Checking for Host Nginx Installation"
+    
+    if command -v nginx &> /dev/null; then
+        print_warning "Found Nginx running on host system. Removing it..."
+        
+        sudo systemctl stop nginx 2>/dev/null || true
+        sudo systemctl disable nginx 2>/dev/null || true
+        sudo apt remove -y nginx nginx-common 2>/dev/null || true
+        sudo apt purge -y nginx* 2>/dev/null || true
+        
+        # Remove old configs
+        sudo rm -rf /etc/nginx 2>/dev/null || true
+        
+        print_success "Host Nginx removed. Nginx will run in Docker only"
+    else
+        print_info "No host Nginx found (good)"
+    fi
+}
+
 # Load existing configuration
 load_existing_config() {
     CONFIG_FILE="${APP_DIR:-.}/.deployment_config"
@@ -107,7 +128,6 @@ configure_security() {
     echo "  • Rate limiting protection"
     echo "  • Vulnerability scanning detection"
     echo "  • DDoS protection"
-    echo "  • SQL injection/XSS blocking"
     echo
     
     read -p "Enable security features? [Y/n]: " ENABLE_SECURITY
@@ -234,7 +254,7 @@ gather_config() {
     echo "Create deployer user: $CREATE_USER"
     echo "Setup firewall: $SETUP_FIREWALL"
     echo "SSL: Handled by Cloudflare (HTTP in Docker)"
-    echo "Nginx: Running in Docker container"
+    echo "Nginx: Running in Docker container (host Nginx will be removed)"
     echo "Security Features: $SECURITY_ENABLED"
     if [ "$SECURITY_ENABLED" = "true" ]; then
         echo "Admin Email: $ADMIN_EMAIL"
@@ -572,257 +592,10 @@ validate_env_file() {
     print_success "Environment configuration validated"
 }
 
-# Install Fail2Ban
-install_fail2ban() {
-    print_header "Installing Fail2Ban"
+# Create Nginx configuration
+create_nginx_config() {
+    print_header "Creating Nginx Configuration"
     
-    if command -v fail2ban-server &> /dev/null; then
-        print_warning "Fail2Ban already installed"
-    else
-        sudo apt install -y fail2ban
-        print_success "Fail2Ban installed"
-    fi
-}
-
-# Configure Fail2Ban
-setup_fail2ban() {
-    print_header "Configuring Fail2Ban"
-    
-    mkdir -p /tmp/fail2ban_setup
-    cd /tmp/fail2ban_setup || exit 1
-    
-    if [ -f /etc/fail2ban/jail.local ]; then
-        print_info "Backing up existing jail.local..."
-        sudo cp /etc/fail2ban/jail.local "/etc/fail2ban/jail.local.backup.$(date +%Y%m%d_%H%M%S)"
-    fi
-    
-    cat > jail.local << 'EOF'
-[DEFAULT]
-bantime = 2592000
-findtime = 3600
-maxretry = 5
-ignoreip = 127.0.0.1/8 ::1
-
-[sshd]
-enabled = true
-port = ssh
-logpath = %(sshd_log)s
-backend = %(sshd_backend)s
-maxretry = 3
-
-[nginx-http-auth]
-enabled = true
-port = http,https
-logpath = /var/log/nginx/esc_error.log
-maxretry = 3
-
-[nginx-bad-requests]
-enabled = true
-port = http,https
-logpath = /var/log/nginx/esc_access.log
-maxretry = 5
-bantime = 86400
-findtime = 600
-
-[nginx-limit-req]
-enabled = true
-port = http,https
-logpath = /var/log/nginx/esc_access.log
-maxretry = 3
-bantime = 86400
-findtime = 300
-EOF
-    
-    sudo cp jail.local /etc/fail2ban/jail.local
-    sudo chmod 644 /etc/fail2ban/jail.local
-    
-    sudo touch /var/log/fail2ban-custom.log
-    sudo chown root:adm /var/log/fail2ban-custom.log
-    sudo chmod 640 /var/log/fail2ban-custom.log
-    
-    print_info "Testing Fail2Ban configuration..."
-    sudo systemctl daemon-reload
-    sudo systemctl restart fail2ban
-    sleep 3
-    
-    if systemctl is-active --quiet fail2ban; then
-        print_success "Fail2Ban configured and started"
-        sudo fail2ban-client reload
-        sleep 2
-    else
-        print_error "Fail2Ban failed to start"
-        print_warning "Continuing without Fail2Ban. Check logs later."
-    fi
-    
-    cd - > /dev/null || exit 1
-}
-
-# Create management scripts
-create_management_scripts() {
-    print_header "Creating Management Scripts"
-    
-    sudo mkdir -p /opt/bin
-    
-    # Fail2Ban dashboard
-    cat > /opt/bin/f2b-dashboard.sh << 'SCRIPT'
-#!/bin/bash
-clear
-echo "╔════════════════════════════════════════════════════════════════════════════════╗"
-echo "║                        Fail2Ban Security Dashboard                            ║"
-echo "╚════════════════════════════════════════════════════════════════════════════════╝"
-echo
-echo "Timestamp: $(date)"
-echo "System Status: $(systemctl is-active fail2ban 2>/dev/null || echo "Not installed")"
-echo
-
-if command -v fail2ban-client &> /dev/null; then
-    echo "PER-JAIL STATISTICS"
-    echo "───────────────────"
-    
-    JAILS=$(sudo fail2ban-client status 2>/dev/null | grep "Jail list:" | cut -d: -f2 | sed 's/,//g')
-    
-    if [ -n "$JAILS" ]; then
-        for jail in $JAILS; do
-            jail_status=$(sudo fail2ban-client status "$jail" 2>/dev/null | grep "Currently banned" | tail -1)
-            if [ -n "$jail_status" ]; then
-                echo "  $jail: $jail_status"
-            fi
-        done
-    else
-        echo "  No active jails found"
-    fi
-    
-    echo
-    echo "RECENTLY BANNED IPs"
-    echo "─────────────────"
-    sudo fail2ban-client status 2>/dev/null | grep "Banned IP" | head -10 || echo "  No recent bans"
-else
-    echo "Fail2Ban is not installed or configured."
-fi
-
-echo
-echo "COMMANDS:"
-echo "  View Fail2Ban logs:  sudo journalctl -u fail2ban -f"
-echo "  Check Docker logs:   docker logs nginx"
-SCRIPT
-    
-    sudo chmod +x /opt/bin/f2b-dashboard.sh
-    
-    # Unban script
-    cat > /opt/bin/f2b-unban.sh << 'SCRIPT'
-#!/bin/bash
-if [ -z "$1" ]; then
-    echo "Usage: $0 <IP_ADDRESS>"
-    exit 1
-fi
-IP=$1
-echo "Unbanning $IP..."
-if command -v fail2ban-client &> /dev/null; then
-    JAILS=$(sudo fail2ban-client status 2>/dev/null | grep "Jail list:" | cut -d: -f2 | sed 's/,//g')
-    for jail in $JAILS; do
-        sudo fail2ban-client set "$jail" unbanip "$IP" 2>/dev/null && echo "✓ Unbanned from $jail"
-    done
-fi
-echo "[$(date '+%Y-%m-%d %H:%M:%S')] MANUAL UNBAN: $IP" | sudo tee -a /var/log/fail2ban-custom.log > /dev/null
-echo "Done"
-SCRIPT
-    
-    sudo chmod +x /opt/bin/f2b-unban.sh
-    
-    # Deploy script
-    cat > "$APP_DIR/deploy.sh" << 'SCRIPT'
-#!/bin/bash
-set -e
-echo "Starting deployment..."
-cd "$(dirname "$0")" || exit 1
-echo "Pulling latest images..."
-docker compose -f compose.prod.yaml pull || { echo "Failed to pull images"; exit 1; }
-echo "Stopping containers..."
-docker compose -f compose.prod.yaml down || true
-echo "Starting new containers..."
-docker compose -f compose.prod.yaml up -d
-echo "Waiting for services..."
-sleep 30
-docker compose -f compose.prod.yaml ps
-echo "Deployment complete!"
-SCRIPT
-    
-    chmod +x "$APP_DIR/deploy.sh"
-    
-    # Logs script
-    cat > "$APP_DIR/logs.sh" << 'SCRIPT'
-#!/bin/bash
-cd "$(dirname "$0")" || exit 1
-SERVICE=${1:-all}
-if [ "$SERVICE" = "all" ]; then
-    docker compose -f compose.prod.yaml logs -f
-else
-    docker compose -f compose.prod.yaml logs -f "$SERVICE"
-fi
-SCRIPT
-    
-    chmod +x "$APP_DIR/logs.sh"
-    
-    # Status script
-    cat > "$APP_DIR/status.sh" << 'SCRIPT'
-#!/bin/bash
-cd "$(dirname "$0")" || exit 1
-echo "=== Container Status ==="
-docker compose -f compose.prod.yaml ps
-echo
-echo "=== Resource Usage ==="
-docker stats --no-stream
-SCRIPT
-    
-    chmod +x "$APP_DIR/status.sh"
-    
-    # Stop script
-    cat > "$APP_DIR/stop.sh" << 'SCRIPT'
-#!/bin/bash
-cd "$(dirname "$0")" || exit 1
-echo "Stopping all services..."
-docker compose -f compose.prod.yaml down
-echo "Services stopped."
-SCRIPT
-    
-    chmod +x "$APP_DIR/stop.sh"
-    
-    # Start script
-    cat > "$APP_DIR/start.sh" << 'SCRIPT'
-#!/bin/bash
-cd "$(dirname "$0")" || exit 1
-echo "Starting all services..."
-docker compose -f compose.prod.yaml up -d
-sleep 30
-docker compose -f compose.prod.yaml ps
-SCRIPT
-    
-    chmod +x "$APP_DIR/start.sh"
-    
-    # Security script
-    cat > "$APP_DIR/security.sh" << 'SCRIPT'
-#!/bin/bash
-/opt/bin/f2b-dashboard.sh
-SCRIPT
-    
-    chmod +x "$APP_DIR/security.sh"
-    
-    print_success "Management scripts created in $APP_DIR/ and /opt/bin/"
-}
-
-# Create updated docker compose with Nginx
-update_docker_compose() {
-    print_header "Updating Docker Compose with Nginx Service"
-    
-    if [ ! -f "$APP_DIR/compose.prod.yaml" ]; then
-        print_error "compose.prod.yaml not found in $APP_DIR"
-        exit 1
-    fi
-    
-    # Backup original
-    cp "$APP_DIR/compose.prod.yaml" "$APP_DIR/compose.prod.yaml.backup.$(date +%Y%m%d_%H%M%S)"
-    
-    # Create Nginx config file
     mkdir -p "$APP_DIR/nginx"
     
     cat > "$APP_DIR/nginx/nginx.conf" << 'EOF'
@@ -895,7 +668,7 @@ server {
     location / {
         limit_req zone=general_limit burst=20 nodelay;
         
-    proxy_pass http://django_app;
+        proxy_pass http://django_app;
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
@@ -953,42 +726,140 @@ server {
 }
 EOF
     
-    print_success "Nginx config created"
-    
-    # Now check if we need to add nginx service to docker compose
-    if ! grep -q "nginx:" "$APP_DIR/compose.prod.yaml"; then
-        print_warning "Adding Nginx service to docker-compose.yml..."
-        
-        # This is a simplified approach - the user might need to manually add it
-        cat >> "$APP_DIR/compose.prod.yaml" << 'EOF'
+    print_success "Nginx config created at $APP_DIR/nginx/nginx.conf"
+}
 
-  nginx:
-    image: nginx:alpine
-    restart: unless-stopped
-    ports:
-      - "80:80"
-      - "443:443"
-    volumes:
-      - ./nginx/nginx.conf:/etc/nginx/conf.d/default.conf:ro
-      - /var/log/nginx:/var/log/nginx
-    depends_on:
-      - web
-    healthcheck:
-      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost/health"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-      start_period: 5s
-    security_opt:
-      - no-new-privileges:true
-    labels:
-      - "com.centurylinklabs.watchtower.enable=true"
-EOF
-        
-        print_success "Nginx service added to compose file"
+# Install Fail2Ban
+install_fail2ban() {
+    print_header "Installing Fail2Ban"
+    
+    if command -v fail2ban-server &> /dev/null; then
+        print_warning "Fail2Ban already installed"
     else
-        print_info "Nginx service already in compose file"
+        sudo apt install -y fail2ban
+        print_success "Fail2Ban installed"
     fi
+}
+
+# Configure Fail2Ban
+setup_fail2ban() {
+    print_header "Configuring Fail2Ban"
+    
+    mkdir -p /tmp/fail2ban_setup
+    cd /tmp/fail2ban_setup || exit 1
+    
+    if [ -f /etc/fail2ban/jail.local ]; then
+        print_info "Backing up existing jail.local..."
+        sudo cp /etc/fail2ban/jail.local "/etc/fail2ban/jail.local.backup.$(date +%Y%m%d_%H%M%S)"
+    fi
+    
+    cat > jail.local << 'EOF'
+[DEFAULT]
+bantime = 2592000
+findtime = 3600
+maxretry = 5
+ignoreip = 127.0.0.1/8 ::1
+
+[sshd]
+enabled = true
+port = ssh
+logpath = %(sshd_log)s
+backend = %(sshd_backend)s
+maxretry = 3
+EOF
+    
+    sudo cp jail.local /etc/fail2ban/jail.local
+    sudo chmod 644 /etc/fail2ban/jail.local
+    
+    print_info "Restarting Fail2Ban..."
+    sudo systemctl daemon-reload
+    sudo systemctl restart fail2ban
+    sleep 3
+    
+    if systemctl is-active --quiet fail2ban; then
+        print_success "Fail2Ban configured and started"
+    else
+        print_warning "Fail2Ban failed to start - continuing without it"
+    fi
+    
+    cd - > /dev/null || exit 1
+}
+
+# Create management scripts
+create_management_scripts() {
+    print_header "Creating Management Scripts"
+    
+    # Deploy script
+    cat > "$APP_DIR/deploy.sh" << 'SCRIPT'
+#!/bin/bash
+set -e
+echo "Starting deployment..."
+cd "$(dirname "$0")" || exit 1
+echo "Pulling latest images..."
+docker compose -f compose.prod.yaml pull || { echo "Failed to pull images"; exit 1; }
+echo "Stopping containers..."
+docker compose -f compose.prod.yaml down || true
+echo "Starting new containers..."
+docker compose -f compose.prod.yaml up -d
+echo "Waiting for services..."
+sleep 30
+docker compose -f compose.prod.yaml ps
+echo "Deployment complete!"
+SCRIPT
+    
+    chmod +x "$APP_DIR/deploy.sh"
+    
+    # Logs script
+    cat > "$APP_DIR/logs.sh" << 'SCRIPT'
+#!/bin/bash
+cd "$(dirname "$0")" || exit 1
+SERVICE=${1:-all}
+if [ "$SERVICE" = "all" ]; then
+    docker compose -f compose.prod.yaml logs -f
+else
+    docker compose -f compose.prod.yaml logs -f "$SERVICE"
+fi
+SCRIPT
+    
+    chmod +x "$APP_DIR/logs.sh"
+    
+    # Status script
+    cat > "$APP_DIR/status.sh" << 'SCRIPT'
+#!/bin/bash
+cd "$(dirname "$0")" || exit 1
+echo "=== Container Status ==="
+docker compose -f compose.prod.yaml ps
+echo
+echo "=== Resource Usage ==="
+docker stats --no-stream
+SCRIPT
+    
+    chmod +x "$APP_DIR/status.sh"
+    
+    # Stop script
+    cat > "$APP_DIR/stop.sh" << 'SCRIPT'
+#!/bin/bash
+cd "$(dirname "$0")" || exit 1
+echo "Stopping all services..."
+docker compose -f compose.prod.yaml down
+echo "Services stopped."
+SCRIPT
+    
+    chmod +x "$APP_DIR/stop.sh"
+    
+    # Start script
+    cat > "$APP_DIR/start.sh" << 'SCRIPT'
+#!/bin/bash
+cd "$(dirname "$0")" || exit 1
+echo "Starting all services..."
+docker compose -f compose.prod.yaml up -d
+sleep 30
+docker compose -f compose.prod.yaml ps
+SCRIPT
+    
+    chmod +x "$APP_DIR/start.sh"
+    
+    print_success "Management scripts created in $APP_DIR/"
 }
 
 # Setup firewall
@@ -1018,7 +889,7 @@ setup_systemd() {
     
     sudo tee /etc/systemd/system/esc.service > /dev/null << EOF
 [Unit]
-Description=ESC Django Application with Nginx
+Description=ESC Django Application with Docker
 Requires=docker.service
 After=docker.service network.target
 
@@ -1102,20 +973,14 @@ print_completion() {
     echo "  Check Status:     $APP_DIR/status.sh"
     echo "  Stop Services:    $APP_DIR/stop.sh"
     echo "  Start Services:   $APP_DIR/start.sh"
-    echo "  Nginx Config:     Edit $APP_DIR/nginx/nginx.conf then run deploy.sh"
     
     if [ "$SECURITY_ENABLED" = "true" ]; then
-        echo "  Security Status:  $APP_DIR/security.sh"
         echo
         echo -e "${GREEN}Security Features Enabled:${NC}"
         echo "  ✓ Fail2Ban protection"
         echo "  ✓ Nginx rate limiting"
         echo "  ✓ Security headers"
         echo "  ✓ Attack pattern blocking"
-        echo
-        echo "Security Management:"
-        echo "  Dashboard:       /opt/bin/f2b-dashboard.sh"
-        echo "  Unban IP:        /opt/bin/f2b-unban.sh <IP>"
     fi
     
     echo
@@ -1133,8 +998,6 @@ print_completion() {
     echo "     $APP_DIR/logs.sh"
     echo "  3. Test your application:"
     echo "     curl http://$DOMAIN_NAME"
-    echo "  4. View Fail2Ban status (if enabled):"
-    echo "     $APP_DIR/security.sh"
     echo
     
     print_success "Deployment ready!"
@@ -1146,6 +1009,7 @@ main() {
     
     check_sudo
     check_os
+    remove_host_nginx
     gather_config
     
     update_system
@@ -1155,8 +1019,7 @@ main() {
     clone_repository
     docker_login
     setup_env_file
-    
-    update_docker_compose
+    create_nginx_config
     
     if [ "$SECURITY_ENABLED" = "true" ]; then
         install_fail2ban
