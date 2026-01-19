@@ -1044,13 +1044,6 @@ install_nginx() {
         print_success "Nginx installed"
     fi
     
-    # Setup SSL
-    if [ "$SETUP_SSL" = "letsencrypt" ]; then
-        setup_letsencrypt_ssl
-    elif [ "$SETUP_SSL" = "selfsigned" ]; then
-        setup_selfsigned_ssl
-    fi
-    
     # Setup error pages
     setup_nginx_error_pages
     
@@ -1060,30 +1053,93 @@ install_nginx() {
     sudo chown www-data:adm /var/log/nginx/esc_*.log
     sudo chmod 644 /var/log/nginx/esc_*.log
     
-    # Create Nginx config
-    if [ "$SECURITY_ENABLED" = "true" ]; then
-        create_nginx_config_secure
-    else
-        if [ "$SETUP_SSL" != "none" ]; then
-            create_nginx_config_with_ssl
+    # Step 1: Create HTTP-only config first (for Let's Encrypt verification)
+    if [ "$SETUP_SSL" = "letsencrypt" ]; then
+        print_info "Creating temporary HTTP config for Let's Encrypt verification..."
+        create_nginx_config_http_only
+        
+        # Enable site and restart
+        sudo ln -sf /etc/nginx/sites-available/esc /etc/nginx/sites-enabled/
+        sudo rm -f /etc/nginx/sites-enabled/default
+        
+        if sudo nginx -t; then
+            sudo systemctl restart nginx
+            print_success "HTTP server started for verification"
         else
-            create_nginx_config_http_only
+            print_error "Nginx configuration test failed"
+            sudo nginx -t
+            exit 1
         fi
-    fi
-    
-    # Enable site
-    sudo ln -sf /etc/nginx/sites-available/esc /etc/nginx/sites-enabled/
-    sudo rm -f /etc/nginx/sites-enabled/default
-    
-    # Test & start
-    if sudo nginx -t; then
-        sudo systemctl restart nginx
-        sudo systemctl enable nginx
-        print_success "Nginx configured and started"
+        
+        # Step 2: Get SSL certificate
+        setup_letsencrypt_ssl
+        
+        # Step 3: Check if certificate was obtained
+        if [ -f "/etc/letsencrypt/live/$DOMAIN_NAME/fullchain.pem" ]; then
+            print_success "SSL certificate obtained, upgrading to HTTPS config..."
+            
+            # Create final config with SSL
+            if [ "$SECURITY_ENABLED" = "true" ]; then
+                create_nginx_config_secure
+            else
+                create_nginx_config_with_ssl
+            fi
+            
+            # Test and restart with SSL config
+            if sudo nginx -t; then
+                sudo systemctl restart nginx
+                print_success "Nginx configured with SSL"
+            else
+                print_error "SSL configuration test failed, reverting to HTTP"
+                create_nginx_config_http_only
+                sudo nginx -t && sudo systemctl restart nginx
+            fi
+        else
+            print_warning "SSL certificate not obtained, keeping HTTP configuration"
+            print_info "You can manually obtain SSL later with: sudo certbot --nginx -d $DOMAIN_NAME"
+        fi
+    elif [ "$SETUP_SSL" = "selfsigned" ]; then
+        setup_selfsigned_ssl
+        
+        # Create config with self-signed SSL
+        if [ "$SECURITY_ENABLED" = "true" ]; then
+            create_nginx_config_secure
+        else
+            create_nginx_config_with_ssl
+        fi
+        
+        # Enable site
+        sudo ln -sf /etc/nginx/sites-available/esc /etc/nginx/sites-enabled/
+        sudo rm -f /etc/nginx/sites-enabled/default
+        
+        # Test & start
+        if sudo nginx -t; then
+            sudo systemctl restart nginx
+            sudo systemctl enable nginx
+            print_success "Nginx configured with self-signed SSL"
+        else
+            print_error "Nginx configuration test failed"
+            sudo nginx -t
+            exit 1
+        fi
     else
-        print_error "Nginx configuration test failed"
-        sudo nginx -t
-        exit 1
+        # No SSL - HTTP only
+        create_nginx_config_http_only
+        
+        # Enable site
+        sudo ln -sf /etc/nginx/sites-available/esc /etc/nginx/sites-enabled/
+        sudo rm -f /etc/nginx/sites-enabled/default
+        
+        # Test & start
+        if sudo nginx -t; then
+            sudo systemctl restart nginx
+            sudo systemctl enable nginx
+            print_success "Nginx configured (HTTP only)"
+        else
+            print_error "Nginx configuration test failed"
+            sudo nginx -t
+            exit 1
+        fi
     fi
 }
 
@@ -1095,13 +1151,40 @@ setup_letsencrypt_ssl() {
         sudo apt install -y certbot python3-certbot-nginx
     fi
     
+    print_warning "IMPORTANT: Cloudflare DNS Configuration"
+    echo "If your domain is behind Cloudflare:"
+    echo "  1. Temporarily set DNS to 'DNS Only' (gray cloud)"
+    echo "  2. Wait 1-2 minutes for DNS to propagate"
+    echo "  3. Run this script to get SSL certificate"
+    echo "  4. Re-enable Cloudflare proxy (orange cloud) after"
+    echo
+    echo "OR use Cloudflare's SSL (recommended for Cloudflare users):"
+    echo "  - Set Cloudflare SSL mode to 'Full' or 'Full (Strict)'"
+    echo "  - Use option 3 'None' for SSL in this script"
+    echo "  - Let Cloudflare handle SSL termination"
+    echo
+    read -p "Is Cloudflare proxy (orange cloud) currently DISABLED? [y/N]: " CF_DISABLED
+    
+    if [[ ! "$CF_DISABLED" =~ ^[Yy]$ ]]; then
+        print_warning "Skipping Let's Encrypt - Cloudflare proxy detected"
+        print_info "Recommendation: Use option 3 'None' for SSL and let Cloudflare handle it"
+        return 1
+    fi
+    
     print_step "Obtaining SSL certificate..."
     sudo certbot certonly --nginx --non-interactive --agree-tos \
         --email "$SSL_EMAIL" \
         -d "$DOMAIN_NAME" \
         -d "www.$DOMAIN_NAME" || {
         print_warning "Certificate obtainment failed"
-        return
+        print_info "Possible solutions:"
+        echo "  1. Ensure domain points to this server's IP"
+        echo "  2. Disable Cloudflare proxy (orange cloud → gray cloud)"
+        echo "  3. Check firewall allows port 80"
+        echo "  4. Try again in a few minutes"
+        echo
+        echo "Manual retry: sudo certbot --nginx -d $DOMAIN_NAME -d www.$DOMAIN_NAME"
+        return 1
     }
     
     print_success "SSL certificate obtained"
