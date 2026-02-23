@@ -10,7 +10,7 @@ services:
     command:
       - "--cleanup"
       - "--interval"
-      - "300"
+      - "86400"
       - "--rolling-restart"
       - "--notifications"
       - "email"
