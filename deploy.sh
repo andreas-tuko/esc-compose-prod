@@ -415,6 +415,7 @@ Database Configuration
 POSTGRES_USER=user
 POSTGRES_PASSWORD=$GENERATED_POSTGRES_PASSWORD
 POSTGRES_DB=dbname
+PGUSER=user
 
 DATABASE_URL=postgresql://user:password@host:port/dbname
 ANALYTICS_DATABASE_URL=postgresql://user:password@host:port/analytics_db

@@ -25,7 +25,7 @@ services:
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD", "pg_isready", "-U",  "${POSTGRES_USER}" , "-d", "${POSTGRES_DB}"]
+      test: ["CMD-SHELL", "psql -U ${POSTGRES_USER} -d ${POSTGRES_DB} -c 'SELECT 1' || exit 1"]
       interval: 10s
       timeout: 3s
       retries: 3
@@ -43,11 +43,6 @@ services:
 
     security_opt:
       - no-new-privileges:true
-      - no-new-hostports:true
-      - apparmor=docker-default
-      - seccomp=unconfined
-      - disable-new-privileges=true
-      - disable-seccomp=true
     
 
   redis:
@@ -181,6 +176,9 @@ volumes:
   redis_data:
   logs_data:
   geoip:
+  nginx_logs:
+  postgres_data:
+
 
 
 # docker pull andreastuko/esc:latest && docker compose -f compose.prod.yaml up
