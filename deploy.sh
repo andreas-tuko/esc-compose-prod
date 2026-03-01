@@ -371,6 +371,10 @@ docker_login() {
 generate_secret_key() {
     python3 -c "import secrets; print(secrets.token_urlsafe(50))"
 }
+generate_postgres_password() {
+    openssl rand -base64 32
+}
+
 
 # Setup environment file
 setup_env_file() {
@@ -393,6 +397,7 @@ setup_env_file() {
     print_step "Creating environment file with default values..."
     
     GENERATED_SECRET_KEY=$(generate_secret_key)
+    GENERATED_POSTGRES_PASSWORD=$(generate_postgres_password)
     
     cat > "$APP_DIR/.env.docker" << EOF
 ============================================
@@ -407,6 +412,10 @@ CSRF_ORIGINS=http://$DOMAIN_NAME,http://www.$DOMAIN_NAME
 ============================================
 Database Configuration
 ============================================
+POSTGRES_USER=user
+POSTGRES_PASSWORD=$GENERATED_POSTGRES_PASSWORD
+POSTGRES_DB=dbname
+
 DATABASE_URL=postgresql://user:password@host:port/dbname
 ANALYTICS_DATABASE_URL=postgresql://user:password@host:port/analytics_db
 
@@ -595,6 +604,7 @@ validate_env_file() {
 # Create Nginx configuration
 create_nginx_config() {
     print_header "Creating Nginx Configuration"
+<<<<<<< HEAD
     
     mkdir -p "$APP_DIR/nginx"
     
@@ -745,6 +755,167 @@ install_fail2ban() {
 setup_fail2ban() {
     print_header "Configuring Fail2Ban"
     
+=======
+    
+    mkdir -p "$APP_DIR/nginx"
+    
+    cat > "$APP_DIR/nginx/nginx.conf" << 'EOF'
+# ESC Django Application - Nginx Configuration
+
+# Upstream configuration for Django application
+upstream django_app {
+    server 127.0.0.1:8000;
+    keepalive 64;
+}
+
+# HTTP Server Configuration
+server {
+    listen 80;
+    listen [::]:80;
+    
+    # Replace with your actual domain
+    server_name bamburiescorts.com www.bamburiescorts.com;
+
+    # Security Headers
+    add_header X-Frame-Options "SAMEORIGIN" always;
+    add_header X-Content-Type-Options "nosniff" always;
+    add_header X-XSS-Protection "1; mode=block" always;
+    add_header Referrer-Policy "strict-origin-when-cross-origin" always;
+
+    # Logging
+    access_log /var/log/nginx/esc_access.log;
+    error_log /var/log/nginx/esc_error.log;
+
+    # Client body size limit (adjust based on your upload requirements)
+    client_max_body_size 100M;
+
+    # Buffer sizes
+    client_body_buffer_size 128k;
+    client_header_buffer_size 1k;
+    large_client_header_buffers 4 16k;
+
+    # Timeouts
+    proxy_connect_timeout 600s;
+    proxy_send_timeout 600s;
+    proxy_read_timeout 600s;
+    send_timeout 600s;
+
+    # Main application location
+    location / {
+        proxy_pass http://django_app;
+        
+        # Standard proxy headers
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        
+        # WebSocket support (if your app uses WebSockets)
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "upgrade";
+        
+        # Disable buffering for real-time responses
+        proxy_buffering off;
+        
+        # Cloudflare real IP restoration
+        # These IPs are Cloudflare's IP ranges
+        set_real_ip_from 173.245.48.0/20;
+        set_real_ip_from 103.21.244.0/22;
+        set_real_ip_from 103.22.200.0/22;
+        set_real_ip_from 103.31.4.0/22;
+        set_real_ip_from 141.101.64.0/18;
+        set_real_ip_from 108.162.192.0/18;
+        set_real_ip_from 190.93.240.0/20;
+        set_real_ip_from 188.114.96.0/20;
+        set_real_ip_from 197.234.240.0/22;
+        set_real_ip_from 198.41.128.0/17;
+        set_real_ip_from 162.158.0.0/15;
+        set_real_ip_from 104.16.0.0/13;
+        set_real_ip_from 104.24.0.0/14;
+        set_real_ip_from 172.64.0.0/13;
+        set_real_ip_from 131.0.72.0/22;
+        
+        # IPv6 ranges
+        set_real_ip_from 2400:cb00::/32;
+        set_real_ip_from 2606:4700::/32;
+        set_real_ip_from 2803:f800::/32;
+        set_real_ip_from 2405:b500::/32;
+        set_real_ip_from 2405:8100::/32;
+        set_real_ip_from 2a06:98c0::/29;
+        set_real_ip_from 2c0f:f248::/32;
+        
+        # Get real IP from Cloudflare header
+        real_ip_header CF-Connecting-IP;
+    }
+
+    # Health check endpoint (no logging for monitoring)
+    location /health {
+        access_log off;
+        proxy_pass http://django_app;
+        proxy_set_header Host $host;
+        proxy_connect_timeout 5s;
+        proxy_read_timeout 5s;
+    }
+
+    # Static files (if served by Nginx instead of Cloudflare)
+    # Uncomment if you want Nginx to serve static files
+    # location /static/ {
+    #     alias /opt/apps/esc/staticfiles/;
+    #     expires 30d;
+    #     add_header Cache-Control "public, immutable";
+    # }
+
+    # Media files (if served by Nginx instead of Cloudflare)
+    # Uncomment if you want Nginx to serve media files
+    # location /media/ {
+    #     alias /opt/apps/esc/media/;
+    #     expires 7d;
+    #     add_header Cache-Control "public";
+    # }
+
+    # Deny access to sensitive files
+    location ~ /\. {
+        deny all;
+        access_log off;
+        log_not_found off;
+    }
+
+    location ~ /\.git {
+        deny all;
+        access_log off;
+        log_not_found off;
+    }
+
+    # Robots.txt
+    location = /robots.txt {
+        access_log off;
+        log_not_found off;
+    }
+}
+
+EOF
+    
+    print_success "Nginx config created at $APP_DIR/nginx/nginx.conf"
+}
+
+# Install Fail2Ban
+install_fail2ban() {
+    print_header "Installing Fail2Ban"
+    
+    if command -v fail2ban-server &> /dev/null; then
+        print_warning "Fail2Ban already installed"
+    else
+        sudo apt install -y fail2ban
+        print_success "Fail2Ban installed"
+    fi
+}
+
+# Configure Fail2Ban
+setup_fail2ban() {
+    print_header "Configuring Fail2Ban"
+    
+>>>>>>> 6c9d6ff (Remove Nginx configuration file for ESC Django application)
     mkdir -p /tmp/fail2ban_setup
     cd /tmp/fail2ban_setup || exit 1
     

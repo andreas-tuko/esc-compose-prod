@@ -8,7 +8,10 @@ A Django-based web application with Celery workers, Redis for caching and queuin
 - **Celery Worker**: Asynchronous task processing
 - **Celery Beat**: Scheduled task execution
 - **Redis**: Cache and message broker
-- **PostgreSQL**: Primary database (external)
+- **PostgreSQL**: Primary database (internal), Analytics database (external)
+- **Cloudflare R2**: Storage for static files and media
+- **Nginx**: Reverse proxy
+
 
 ## Prerequisites
 
@@ -18,6 +21,7 @@ A Django-based web application with Celery workers, Redis for caching and queuin
 - M-Pesa API credentials
 - Sentry account (optional)
 - PostHog account (optional)
+- Nginx
 
 ## Environment Configuration
 
@@ -29,6 +33,10 @@ DEBUG=False
 ENVIRONMENT=production
 ALLOWED_HOSTS=localhost,yourdomain.com
 CSRF_ORIGINS=https://yourdomain.com
+
+POSTGRES_USER=user
+POSTGRES_PASSWORD=password
+POSTGRES_DB=dbname
 
 DATABASE_URL=postgresql://user:password@host:port/dbname
 ANALYTICS_DATABASE_URL=postgresql://user:password@host:port/analytics_db
