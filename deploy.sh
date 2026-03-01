@@ -624,7 +624,7 @@ create_nginx_config() {
 
 # Upstream configuration for Django application
 upstream django_app {
-    server 127.0.0.1:8000;
+    server web:8000;
     keepalive 64;
 }
 
