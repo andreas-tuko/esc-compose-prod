@@ -375,6 +375,17 @@ generate_postgres_password() {
     openssl rand -base64 32
 }
 
+link_env_file() {
+    print_header "Linking Environment File"
+    if [ -f "$APP_DIR/.env.docker" ]; then
+        print_info "Environment file already exists, linking it..."
+        ln -sf "$APP_DIR/.env.docker" "$APP_DIR/.env"
+        print_success "Environment file linked"
+    else
+        print_warning "Environment file not found, skipping linking"
+    fi
+}
+
 
 # Setup environment file
 setup_env_file() {
@@ -1038,6 +1049,7 @@ main() {
     clone_repository
     docker_login
     setup_env_file
+    link_env_file
     create_nginx_config
     
     if [ "$SECURITY_ENABLED" = "true" ]; then
