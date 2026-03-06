@@ -292,3 +292,5 @@ build/
 
 # Deployment configuration (contains sensitive info)
 .deployment_config
+
+*.env*
