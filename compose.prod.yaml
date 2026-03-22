@@ -142,7 +142,11 @@ services:
       - logs_data:/app/logs
       - geoip:/app/geoip
     healthcheck:
-      test: ["CMD-SHELL", "ps aux | grep 'celery worker' | grep -v grep"]
+      test:
+        [
+          "CMD-SHELL",
+          "celery -A esc inspect ping -d celery@$${HOSTNAME} || exit 1"
+        ]
       interval: 30s
       timeout: 10s
       retries: 3
