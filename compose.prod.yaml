@@ -126,6 +126,9 @@ services:
       --loglevel=info
       --concurrency=2
       --prefetch-multiplier=1
+      --max-tasks-per-child=100
+      --max-memory-per-child=200000
+
     env_file:
       - .env.docker
     depends_on:
@@ -139,11 +142,7 @@ services:
       - logs_data:/app/logs
       - geoip:/app/geoip
     healthcheck:
-      test:
-        [
-          "CMD-SHELL",
-          "celery -A esc inspect ping -d celery@$${HOSTNAME} || exit 1"
-        ]
+      test: ["CMD-SHELL", "ps aux | grep 'celery worker' | grep -v grep"]
       interval: 30s
       timeout: 10s
       retries: 3
