@@ -31,10 +31,10 @@ services:
       - PGUSER=${POSTGRES_USER}
     healthcheck:
       test: ["CMD-SHELL", "psql -U $$POSTGRES_USER -d $$POSTGRES_DB -c 'SELECT 1' || exit 1"]
-      interval: 10s
-      timeout: 3s
-      retries: 3
-      start_period: 5s
+      interval: 5m
+      timeout: 5s
+      retries: 2
+      start_period: 20s
 
     deploy:
       resources:
@@ -57,10 +57,10 @@ services:
       - redis_data:/data
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
-      interval: 10s
+      interval: 2m
       timeout: 3s
-      retries: 3
-      start_period: 5s
+      retries: 2
+      start_period: 10s
     security_opt:
       - no-new-privileges:true
 
@@ -82,9 +82,9 @@ services:
       - geoip:/app/geoip
     healthcheck:
       test: ["CMD", "python3", "./docker-health-check.py"]
-      interval: 30s
-      timeout: 120s
-      retries: 5
+      interval: 15m
+      timeout: 10s
+      retries: 2
       start_period: 240s
     logging:
       driver: json-file
@@ -109,11 +109,11 @@ services:
       web:
         condition: service_healthy
     healthcheck:
-      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost/health"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-      start_period: 5s
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost/health/ready/"]
+      interval: 5m
+      timeout: 5s
+      retries: 2
+      start_period: 10s
     security_opt:
       - no-new-privileges:true
 
@@ -147,9 +147,9 @@ services:
           "CMD-SHELL",
           "celery -A esc inspect ping -d celery@$${HOSTNAME} || exit 1"
         ]
-      interval: 30s
+      interval: 5m
       timeout: 10s
-      retries: 3
+      retries: 2
       start_period: 300s
     security_opt:
       - no-new-privileges:true
