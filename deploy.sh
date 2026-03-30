@@ -526,7 +526,7 @@ EOF
 # Validate env
 # ---------------------------------------------------------------------------
 validate_env_file() {
-    print_header "Validating Environment Configuration"
+    print_header "Validating Environment Configuration."
 
     local validation_failed=false
     local errors=()
@@ -681,18 +681,23 @@ server {
         return 444;
     }
 
-    # Health check — internal only, no rate limit
-    location = /health/ {
+    # Health check — internal only, lightweight
+    location = /health/ready/ {
         access_log off;
-        proxy_pass http://django_app;
-        proxy_set_header Host            $host;
+        proxy_pass http://django_app/health/ready/;
+        proxy_set_header Host $host;
         proxy_connect_timeout 5s;
-        proxy_read_timeout    5s;
+        proxy_read_timeout 5s;
     }
-
+    
+    # Backward compatibility: redirect /health → /health/ready/
+    location = /health/ {
+        return 301 /health/ready/;
+    }
+    
     location = /health {
         return 301 /health/;
-     }
+    }
 
     # Main application — rate limited
     location / {
