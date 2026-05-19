@@ -1,8 +1,8 @@
 #!/bin/bash
 
-# ESC Django Application - Automated Deployment Script
-# Cloudflare handles all SSL - Nginx runs in Docker
-# Includes: Docker, Nginx in Container, Fail2Ban (SSH + HTTP), Rate Limiting, Attack Blocking
+# ESC Django Application - Automated Deployment Script (Traefik Edition)
+# Cloudflare handles all SSL - Traefik runs in Docker
+# Includes: Docker, Traefik, Fail2Ban (SSH protection), Rate Limiting, and Headers
 
 set -e
 
@@ -68,7 +68,7 @@ remove_host_nginx() {
         sudo apt remove -y nginx nginx-common 2>/dev/null || true
         sudo apt purge -y nginx* 2>/dev/null || true
         sudo rm -rf /etc/nginx 2>/dev/null || true
-        print_success "Host Nginx removed. Nginx will run in Docker only"
+        print_success "Host Nginx removed"
     else
         print_info "No host Nginx found (good)"
     fi
@@ -108,11 +108,9 @@ EOF
 configure_security() {
     print_header "Security Configuration"
     echo "Enable advanced security features? (Recommended: Yes)"
-    echo "  • Fail2Ban with SSH + HTTP jails"
+    echo "  • Fail2Ban SSH jail"
     echo "  • iptables persistent block rules"
-    echo "  • Django log filter — bans IPs sending suspicious/400 requests"
-    echo "  • Vulnerability scanner detection (PHPUnit, ThinkPHP, etc.)"
-    echo "  • Rate limiting protection"
+    echo "  • Traefik rate limiting protection"
     echo "  • DDoS protection"
     echo
 
@@ -229,7 +227,7 @@ gather_config() {
     echo "Create deployer user: $CREATE_USER"
     echo "Setup firewall:       $SETUP_FIREWALL"
     echo "SSL:                  Handled by Cloudflare"
-    echo "Nginx:                Running in Docker"
+    echo "Reverse Proxy:        Traefik (in Docker)"
     echo "Security Features:    $SECURITY_ENABLED"
     [ "$SECURITY_ENABLED" = "true" ] && echo "Admin Email:          $ADMIN_EMAIL"
     echo
@@ -250,9 +248,7 @@ update_system() {
     sudo apt update
     sudo apt upgrade -y
     sudo apt install -y curl wget git nano jq mailutils sendmail
-    # Install iptables-persistent first (it conflicts with ufw if installed together)
     sudo apt install -y iptables-persistent netfilter-persistent
-    # Reinstall ufw after iptables-persistent (apt may have removed it)
     sudo apt install -y ufw
     print_success "System updated"
 }
@@ -526,7 +522,7 @@ EOF
 # Validate env
 # ---------------------------------------------------------------------------
 validate_env_file() {
-    print_header "Validating Environment Configuration."
+    print_header "Validating Environment Configuration"
 
     local validation_failed=false
     local errors=()
@@ -587,164 +583,14 @@ validate_env_file() {
 }
 
 # ---------------------------------------------------------------------------
-# Nginx config
+# Cleanup Old Nginx Config
 # ---------------------------------------------------------------------------
-create_nginx_config() {
-    print_header "Creating Nginx Configuration"
-    mkdir -p "$APP_DIR/nginx"
-
-    cat > "$APP_DIR/nginx/nginx.conf" << 'EOF'
-# ESC Django Application - Nginx Configuration
-
-upstream django_app {
-    server web:8000;
-    keepalive 64;
-}
-
-# Limit request rates per IP
-limit_req_zone $binary_remote_addr zone=general:10m rate=30r/m;
-limit_req_zone $binary_remote_addr zone=strict:10m  rate=5r/m;
-limit_conn_zone $binary_remote_addr zone=conn_limit:10m;
-
-server {
-    listen 80;
-    listen [::]:80;
-    server_name bamburiescorts.com www.bamburiescorts.com;
-
-    # Security Headers
-    add_header X-Frame-Options        "SAMEORIGIN"                   always;
-    add_header X-Content-Type-Options "nosniff"                      always;
-    add_header X-XSS-Protection       "1; mode=block"                always;
-    add_header Referrer-Policy        "strict-origin-when-cross-origin" always;
-
-    # Logging
-    access_log /var/log/nginx/esc_access.log;
-    error_log  /var/log/nginx/esc_error.log;
-
-    client_max_body_size       100M;
-    client_body_buffer_size    128k;
-    client_header_buffer_size  1k;
-    large_client_header_buffers 4 16k;
-
-    proxy_connect_timeout 60s;
-    proxy_send_timeout    60s;
-    proxy_read_timeout    60s;
-    send_timeout          60s;
-
-    # --- Hard-block known attack patterns immediately (return 444 = no response) ---
-
-    # PHP file probing (PHPUnit RCE, eval-stdin, etc.)
-    location ~* \.(php)$ {
-        return 444;
-    }
-
-    # Common exploit path segments
-    location ~* /(phpunit|eval-stdin|laravel|yii|zend|thinkphp|pearcmd) {
-        return 444;
-    }
-
-    # XML-RPC brute force
-    location = /xmlrpc.php {
-        return 444;
-    }
-
-    # WordPress probing on a non-WP site
-    location ~* /wp-(admin|login|content|includes|json) {
-        return 444;
-    }
-
-    # Docker daemon exposure probe
-    location = /containers/json {
-        return 444;
-    }
-
-    # ThinkPHP / generic index.php exploit patterns
-    location ~* /index\.php {
-        # Only allow if no exploit query params
-        if ($query_string ~* "(invokefunction|call_user_func|pearcmd|auto_prepend_file|allow_url_include)") {
-            return 444;
-        }
-        proxy_pass http://django_app;
-        proxy_set_header Host              $host;
-        proxy_set_header X-Real-IP         $remote_addr;
-        proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto $scheme;
-    }
-
-    # hello.world / XML-RPC style POST probes
-    location ~* \.(world|asp|aspx|cgi|env|git|svn|bak|sql|tar|gz|zip)$ {
-        return 444;
-    }
-
-    # Hidden files/dirs
-    location ~ /\. {
-        return 444;
-    }
-
-    # Health check — internal only, lightweight
-    location = /health/ready/ {
-        access_log off;
-        proxy_pass http://django_app/health/ready/;
-        proxy_set_header Host $host;
-        proxy_connect_timeout 5s;
-        proxy_read_timeout 5s;
-    }
-    
-    # Backward compatibility: redirect /health → /health/ready/
-    location = /health/ {
-        return 301 /health/ready/;
-    }
-    
-    location = /health {
-        return 301 /health/;
-    }
-
-    # Main application — rate limited
-    location / {
-        limit_req  zone=general burst=20 nodelay;
-        limit_conn conn_limit 20;
-
-        proxy_pass http://django_app;
-
-        proxy_set_header Host              $host;
-        proxy_set_header X-Real-IP         $remote_addr;
-        proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto $scheme;
-
-        proxy_http_version 1.1;
-        proxy_set_header Upgrade    $http_upgrade;
-        proxy_set_header Connection "upgrade";
-        proxy_buffering off;
-
-        # Restore real client IP from Cloudflare
-        set_real_ip_from 173.245.48.0/20;
-        set_real_ip_from 103.21.244.0/22;
-        set_real_ip_from 103.22.200.0/22;
-        set_real_ip_from 103.31.4.0/22;
-        set_real_ip_from 141.101.64.0/18;
-        set_real_ip_from 108.162.192.0/18;
-        set_real_ip_from 190.93.240.0/20;
-        set_real_ip_from 188.114.96.0/20;
-        set_real_ip_from 197.234.240.0/22;
-        set_real_ip_from 198.41.128.0/17;
-        set_real_ip_from 162.158.0.0/15;
-        set_real_ip_from 104.16.0.0/13;
-        set_real_ip_from 104.24.0.0/14;
-        set_real_ip_from 172.64.0.0/13;
-        set_real_ip_from 131.0.72.0/22;
-        set_real_ip_from 2400:cb00::/32;
-        set_real_ip_from 2606:4700::/32;
-        set_real_ip_from 2803:f800::/32;
-        set_real_ip_from 2405:b500::/32;
-        set_real_ip_from 2405:8100::/32;
-        set_real_ip_from 2a06:98c0::/29;
-        set_real_ip_from 2c0f:f248::/32;
-        real_ip_header CF-Connecting-IP;
-    }
-}
-EOF
-
-    print_success "Nginx config created at $APP_DIR/nginx/nginx.conf"
+cleanup_old_nginx() {
+    print_header "Cleaning up old Nginx configurations"
+    sudo systemctl stop nginx 2>/dev/null || true
+    sudo systemctl disable nginx 2>/dev/null || true
+    sudo rm -rf "$APP_DIR/nginx" 2>/dev/null || true
+    print_success "Nginx cleaned up"
 }
 
 # ---------------------------------------------------------------------------
@@ -761,21 +607,19 @@ install_fail2ban() {
 }
 
 # ---------------------------------------------------------------------------
-# Configure Fail2Ban — SSH + three HTTP jails
+# Configure Fail2Ban — SSH Protection
 # ---------------------------------------------------------------------------
 setup_fail2ban() {
-    print_header "Configuring Fail2Ban (SSH + HTTP attack jails)"
+    print_header "Configuring Fail2Ban (SSH attack jail)"
 
     # ---- jail.local -------------------------------------------------------
     sudo tee /etc/fail2ban/jail.local > /dev/null << 'EOF'
 [DEFAULT]
-# Ban for 30 days; detect within 10 minutes; allow 5 retries
 bantime  = 2592000
 findtime = 600
 maxretry = 5
 ignoreip = 127.0.0.1/8 ::1
 
-# Use iptables-multiport for all jails
 banaction = iptables-multiport
 
 # ── SSH ────────────────────────────────────────────────────────────────────
@@ -785,74 +629,15 @@ port     = ssh
 logpath  = %(sshd_log)s
 backend  = %(sshd_backend)s
 maxretry = 3
-
-# ── Django / Nginx: suspicious 400 probes ─────────────────────────────────
-# Catches IPs sending bad Host headers + exploit paths (eval-stdin, phpunit…)
-[django-400]
-enabled  = true
-port     = http,https
-filter   = django-400
-logpath  = /var/log/nginx/esc_access.log
-maxretry = 10
-findtime = 60
-bantime  = 2592000
-
-# ── Nginx: vulnerability scanner patterns ─────────────────────────────────
-[nginx-scan]
-enabled  = true
-port     = http,https
-filter   = nginx-scan
-logpath  = /var/log/nginx/esc_access.log
-maxretry = 3
-findtime = 60
-bantime  = 2592000
-
-# ── Nginx: excessive 4xx (general bad actors) ─────────────────────────────
-[nginx-4xx]
-enabled  = true
-port     = http,https
-filter   = nginx-4xx
-logpath  = /var/log/nginx/esc_access.log
-maxretry = 20
-findtime = 60
-bantime  = 86400
 EOF
 
-    # ---- filter: django-400 -----------------------------------------------
-    # Matches lines from both Django logs and Nginx access logs where the
-    # response is 400 and originates from a real client (not 127.0.0.1).
-    sudo tee /etc/fail2ban/filter.d/django-400.conf > /dev/null << 'EOF'
-[Definition]
-# Match Nginx combined-log lines with status 400
-failregex = ^<HOST> .+ " 400 \d+
-            ^.+"<HOST>" \d+ \d+ .+ 400
-            .*WARNING.*400 response for .* from <HOST>
-ignoreregex = ^127\. ^172\.18\.
-EOF
-
-    # ---- filter: nginx-scan -----------------------------------------------
-    # Matches known exploit paths regardless of status code.
-    sudo tee /etc/fail2ban/filter.d/nginx-scan.conf > /dev/null << 'EOF'
-[Definition]
-failregex = ^<HOST> .+"(GET|POST|HEAD) /.*(phpunit|eval-stdin|\.php|xmlrpc|wp-admin|wp-login|invokefunction|call_user_func|pearcmd|auto_prepend_file|allow_url_include|/containers/json|\.env|\.git|hello\.world).* \d+
-ignoreregex =
-EOF
-
-    # ---- filter: nginx-4xx ------------------------------------------------
-    sudo tee /etc/fail2ban/filter.d/nginx-4xx.conf > /dev/null << 'EOF'
-[Definition]
-failregex = ^<HOST> .+" (400|403|404|405|444) \d+
-ignoreregex = ^127\. ^172\.18\. .+(robots\.txt|favicon\.ico|health)
-EOF
-
-    # ---- restart -----------------------------------------------------------
     sudo systemctl daemon-reload
     sudo systemctl enable fail2ban
     sudo systemctl restart fail2ban
     sleep 3
 
     if systemctl is-active --quiet fail2ban; then
-        print_success "Fail2Ban configured and started with HTTP jails"
+        print_success "Fail2Ban configured and started with SSH jail"
         sudo fail2ban-client status 2>/dev/null || true
     else
         print_warning "Fail2Ban failed to start — check: sudo journalctl -u fail2ban"
@@ -860,112 +645,22 @@ EOF
 }
 
 # ---------------------------------------------------------------------------
-# Persist iptables rules (survive reboots)
+# Persist iptables rules
 # ---------------------------------------------------------------------------
 setup_iptables_persistence() {
     print_header "Setting Up iptables Persistence"
 
-    # Ensure the service exists (installed earlier via iptables-persistent)
     sudo systemctl enable netfilter-persistent 2>/dev/null || true
 
-    # Drop packets with no established connection state (basic DDoS mitigation)
     sudo iptables -A INPUT  -m conntrack --ctstate INVALID -j DROP 2>/dev/null || true
     sudo iptables -A INPUT  -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT 2>/dev/null || true
 
-    # Save current rules so they reload on boot
     sudo /usr/sbin/netfilter-persistent save 2>/dev/null || \
-sudo /usr/share/netfilter-persistent/plugins.d/15-ip4tables save 2>/dev/null || \
-sudo iptables-save | sudo tee /etc/iptables/rules.v4 > /dev/null
-sudo ip6tables-save | sudo tee /etc/iptables/rules.v6 > /dev/null
+    sudo /usr/share/netfilter-persistent/plugins.d/15-ip4tables save 2>/dev/null || \
+    sudo iptables-save | sudo tee /etc/iptables/rules.v4 > /dev/null
+    sudo ip6tables-save | sudo tee /etc/iptables/rules.v6 > /dev/null
 
     print_success "iptables rules saved — they will survive reboots"
-}
-
-# ---------------------------------------------------------------------------
-# Auto-ban script (run via cron) — scans Docker logs for new attack IPs
-# ---------------------------------------------------------------------------
-create_autoban_script() {
-    print_header "Creating Auto-Ban Cron Script"
-
-    sudo tee /usr/local/bin/esc-autoban.sh > /dev/null << 'SCRIPT'
-#!/bin/bash
-# esc-autoban.sh — scans Docker / Nginx logs and permanently bans IPs that
-# send exploit probes or excessive 400 responses.
-# Runs every minute via cron.
-
-LOGFILE="/var/log/esc-autoban.log"
-THRESHOLD=10      # number of 400/suspicious hits before ban
-WINDOW=60         # look-back window in seconds
-
-# Patterns that definitively signal an attack scanner
-ATTACK_PATTERNS="phpunit|eval-stdin|invokefunction|call_user_func|pearcmd|auto_prepend_file|allow_url_include|containers/json|hello\.world|wp-login|xmlrpc|\.env$"
-
-timestamp() { date '+%Y-%m-%d %H:%M:%S'; }
-
-ban_ip() {
-    local ip="$1"
-    local reason="$2"
-    # Skip private / loopback ranges
-    if [[ "$ip" =~ ^(127\.|10\.|172\.(1[6-9]|2[0-9]|3[0-1])\.|192\.168\.) ]]; then
-        return
-    fi
-    # Already banned?
-    if sudo iptables -C INPUT -s "$ip" -j DROP 2>/dev/null; then
-        return
-    fi
-    sudo iptables -A INPUT -s "$ip" -j DROP
-    sudo netfilter-persistent save > /dev/null 2>&1
-    echo "$(timestamp) BANNED $ip — $reason" >> "$LOGFILE"
-}
-
-# --- Scan Nginx access log -------------------------------------------------
-NGINX_LOG="/var/log/nginx/esc_access.log"
-
-if [ -f "$NGINX_LOG" ]; then
-    # IPs with attack patterns
-    grep -aP "$ATTACK_PATTERNS" "$NGINX_LOG" \
-        | awk '{print $1}' | sort | uniq -c | sort -rn \
-        | while read count ip; do
-            ban_ip "$ip" "attack pattern in Nginx log (${count}x)"
-        done
-
-    # IPs with >= THRESHOLD 400 responses in the last WINDOW seconds
-    SINCE=$(date -d "-${WINDOW} seconds" '+%d/%b/%Y:%H:%M:%S' 2>/dev/null || \
-            date -v-"${WINDOW}"S '+%d/%b/%Y:%H:%M:%S')
-    awk -v since="$SINCE" '$0 >= since' "$NGINX_LOG" 2>/dev/null \
-        | awk '$9 == 400 {print $1}' | sort | uniq -c | sort -rn \
-        | while read count ip; do
-            if [ "$count" -ge "$THRESHOLD" ]; then
-                ban_ip "$ip" "${count} x 400 in ${WINDOW}s"
-            fi
-        done
-fi
-
-# --- Scan Docker web container logs ----------------------------------------
-DOCKER_LOGS=$(docker logs --since="${WINDOW}s" web 2>/dev/null || true)
-
-if [ -n "$DOCKER_LOGS" ]; then
-    # Suspicious requests logged by Django
-    echo "$DOCKER_LOGS" \
-        | grep -aP "Suspicious request from|400 response for" \
-        | grep -oP '\d{1,3}(\.\d{1,3}){3}' | sort | uniq -c | sort -rn \
-        | while read count ip; do
-            if [ "$count" -ge 3 ]; then
-                ban_ip "$ip" "Django suspicious/400 flag (${count}x)"
-            fi
-        done
-fi
-SCRIPT
-
-    sudo chmod +x /usr/local/bin/esc-autoban.sh
-
-    # Install cron job — run every minute as root
-    (sudo crontab -l 2>/dev/null | grep -v esc-autoban; \
-     echo "* * * * * /usr/local/bin/esc-autoban.sh") \
-     | sudo crontab -
-
-    print_success "Auto-ban script installed at /usr/local/bin/esc-autoban.sh"
-    print_success "Cron job added — runs every minute"
 }
 
 # ---------------------------------------------------------------------------
@@ -987,7 +682,7 @@ docker compose -f compose.prod.yaml down || true
 echo "Starting new containers..."
 docker compose -f compose.prod.yaml up -d
 echo "Waiting for services..."
-sleep 30
+sleep 15
 docker compose -f compose.prod.yaml ps
 echo "Deployment complete!"
 SCRIPT
@@ -1040,7 +735,7 @@ SCRIPT
 cd "$(dirname "$0")" || exit 1
 echo "Starting all services..."
 docker compose -f compose.prod.yaml up -d
-sleep 30
+sleep 15
 docker compose -f compose.prod.yaml ps
 SCRIPT
     chmod +x "$APP_DIR/start.sh"
@@ -1134,8 +829,8 @@ start_application() {
     fi
     print_success "Services started"
 
-    print_info "Waiting for services to initialize (60 seconds)..."
-    for i in {1..12}; do echo -n "."; sleep 5; done
+    print_info "Waiting for services to initialize (15 seconds)..."
+    for i in {1..3}; do echo -n "."; sleep 5; done
     echo
 
     if docker compose -f compose.prod.yaml ps | grep -q "Up"; then
@@ -1154,18 +849,17 @@ start_application() {
 print_completion() {
     print_header "Installation Complete!"
 
-    echo -e "${GREEN}Your ESC Django application is fully deployed with attack protection!${NC}\n"
+    echo -e "${GREEN}Your ESC Django application is fully deployed with Traefik!${NC}\n"
 
     echo "Application:"
     echo "  Domain:      http://$DOMAIN_NAME (Cloudflare handles HTTPS)"
     echo "  App dir:     $APP_DIR"
     echo "  Env file:    $APP_DIR/.env.docker"
-    echo "  Nginx conf:  $APP_DIR/nginx/nginx.conf"
     echo
     echo "Management Commands:"
     echo "  Deploy/Update:  $APP_DIR/deploy.sh"
     echo "  View Logs:      $APP_DIR/logs.sh [service]"
-    echo "  Check Status:   $APP_DIR/status.sh   ← shows banned IPs too"
+    echo "  Check Status:   $APP_DIR/status.sh"
     echo "  Stop Services:  $APP_DIR/stop.sh"
     echo "  Start Services: $APP_DIR/start.sh"
     echo "  Unban an IP:    $APP_DIR/unban.sh <ip>"
@@ -1174,18 +868,11 @@ print_completion() {
     if [ "$SECURITY_ENABLED" = "true" ]; then
         echo -e "${GREEN}Security Features Active:${NC}"
         echo "  ✓ Fail2Ban — SSH jail (3 retries → 30-day ban)"
-        echo "  ✓ Fail2Ban — django-400 jail (10 hits/min → 30-day ban)"
-        echo "  ✓ Fail2Ban — nginx-scan jail (3 exploit probes → 30-day ban)"
-        echo "  ✓ Fail2Ban — nginx-4xx jail  (20 errors/min → 24-hr ban)"
-        echo "  ✓ Nginx — return 444 (silent drop) for all PHP/exploit paths"
-        echo "  ✓ Nginx — rate limiting (30 req/min general, 20 concurrent)"
-        echo "  ✓ Auto-ban cron — scans logs every minute, bans new attackers"
+        echo "  ✓ Traefik — Native rate limiting (30 req/min general, 20 concurrent)"
+        echo "  ✓ Traefik — Automated secure headers applied to Django router"
         echo "  ✓ iptables-persistent — bans survive server reboots"
         echo
-        echo "  View ban log:        sudo tail -f /var/log/esc-autoban.log"
-        echo "  List banned IPs:     sudo iptables -L INPUT -n | grep DROP"
         echo "  Fail2Ban status:     sudo fail2ban-client status"
-        echo "  Jail detail:         sudo fail2ban-client status django-400"
     fi
 
     echo
@@ -1227,13 +914,12 @@ main() {
     docker_login
     setup_env_file
     link_env_file
-    create_nginx_config
+    cleanup_old_nginx
 
     if [ "$SECURITY_ENABLED" = "true" ]; then
         install_fail2ban
         setup_fail2ban
         setup_iptables_persistence
-        create_autoban_script
     fi
 
     setup_systemd
