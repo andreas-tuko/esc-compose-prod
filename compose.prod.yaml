@@ -114,6 +114,22 @@ services:
       - no-new-privileges:true
     labels:
       - "com.centurylinklabs.watchtower.enable=true"
+      - "traefik.enable=true"
+      - "traefik.http.routers.django.rule=Host(`bamburiescorts.com`) || Host(`www.bamburiescorts.com`)"
+      - "traefik.http.routers.django.entrypoints=web"
+      - "traefik.http.services.django.loadbalancer.server.port=8000"
+      - "traefik.http.middlewares.sec-headers.headers.customFrameOptionsValue=SAMEORIGIN"
+      - "traefik.http.middlewares.sec-headers.headers.contentTypeNosniff=true"
+      - "traefik.http.middlewares.sec-headers.headers.browserXssFilter=true"
+      - "traefik.http.middlewares.sec-headers.headers.referrerPolicy=strict-origin-when-cross-origin"
+      - "traefik.http.middlewares.sec-headers.headers.stsSeconds=31536000"
+      - "traefik.http.middlewares.sec-headers.headers.stsIncludeSubdomains=true"
+      - "traefik.http.middlewares.rate-limit.ratelimit.average=30"
+      - "traefik.http.middlewares.rate-limit.ratelimit.burst=20"
+      - "traefik.http.middlewares.rate-limit.ratelimit.period=1m"
+      - "traefik.http.middlewares.health-redir.redirectregex.regex=^http://([^/]+)/health$$"
+      - "traefik.http.middlewares.health-redir.redirectregex.replacement=http://$${1}/health/"
+      - "traefik.http.routers.django.middlewares=sec-headers,rate-limit,health-redir"
     deploy:
       resources:
         limits:
@@ -123,20 +139,23 @@ services:
           cpus: "0.2"
           memory: 256M
 
-  nginx:
-    image: nginx:alpine
+  traefik:
+    image: traefik:v3.6.12
     restart: unless-stopped
     ports:
       - "80:80"
-      - "443:443"
+    command:
+      - "--providers.docker=true"
+      - "--providers.docker.exposedbydefault=false"
+      - "--entrypoints.web.address=:80"
+      # Restore real client IP from Cloudflare
+      - "--entrypoints.web.forwardedHeaders.trustedIPs=173.245.48.0/20,103.21.244.0/22,103.22.200.0/22,103.31.4.0/22,141.101.64.0/18,108.162.192.0/18,190.93.240.0/20,188.114.96.0/20,197.234.240.0/22,198.41.128.0/17,162.158.0.0/15,104.16.0.0/13,104.24.0.0/14,172.64.0.0/13,131.0.72.0/22,2400:cb00::/32,2606:4700::/32,2803:f800::/32,2405:b500::/32,2405:8100::/32,2a06:98c0::/29,2c0f:f248::/32"
+      - "--ping=true"
+      - "--accesslog=true"
     volumes:
-      - ./nginx/nginx.conf:/etc/nginx/conf.d/default.conf:ro
-      - nginx_logs:/var/log/nginx
-    depends_on:
-      web:
-        condition: service_healthy
+      - "/var/run/docker.sock:/var/run/docker.sock:ro"
     healthcheck:
-      test: ["CMD-SHELL", "nc -z localhost 80 || exit 1"]
+      test: [ "CMD", "traefik", "healthcheck", "--ping" ]
       interval: 30s
       timeout: 5s
       retries: 3
@@ -152,6 +171,9 @@ services:
         reservations:
           cpus: "0.05"
           memory: 64M
+    depends_on:
+      web:
+        condition: service_healthy
 
 
   celery_worker:
@@ -235,7 +257,6 @@ volumes:
   redis_data:
   logs_data:
   geoip:
-  nginx_logs:
   postgres_data:
 
 
