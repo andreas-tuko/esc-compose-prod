@@ -159,7 +159,7 @@ services:
   celery_beat:
     image: andreastuko/esc:latest
     restart: unless-stopped
-    command: celery -A esc beat -l info
+    command: celery -A esc beat -l info --pidfile=
     env_file:
       - .env.docker
     depends_on:
