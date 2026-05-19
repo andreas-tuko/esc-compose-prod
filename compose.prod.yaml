@@ -147,9 +147,9 @@ services:
           "CMD-SHELL",
           "celery -A esc inspect ping -d celery@$${HOSTNAME} || exit 1"
         ]
-      interval: 5m
-      timeout: 10s
-      retries: 2
+      interval: 60s
+      timeout: 30s
+      retries: 3
       start_period: 300s
     security_opt:
       - no-new-privileges:true
