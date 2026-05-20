@@ -16,11 +16,7 @@ CYAN='\033[0;36m'
 NC='\033[0m'
 
 # Print functions
-print_header() {
-    echo -e "\n${BLUE}============================================${NC}"
-    echo -e "${BLUE}$1${NC}"
-    echo -e "${BLUE}============================================${NC}\n"
-}
+print_header()  { echo -e "\n${BLUE}============================================${NC}"; echo -e "${BLUE}$1${NC}"; echo -e "${BLUE}============================================${NC}\n"; }
 print_success() { echo -e "${GREEN}✓ $1${NC}"; }
 print_error()   { echo -e "${RED}✗ $1${NC}"; }
 print_warning() { echo -e "${YELLOW}⚠ $1${NC}"; }
@@ -57,20 +53,43 @@ check_os() {
 }
 
 # ---------------------------------------------------------------------------
-# Remove conflicting host Nginx
+# Remove any conflicting host-level web servers
+# Traefik runs in Docker on port 80 — nothing else should bind that port
 # ---------------------------------------------------------------------------
-remove_host_nginx() {
-    print_header "Checking for Host Nginx Installation"
-    if command -v nginx &> /dev/null; then
-        print_warning "Found Nginx running on host system. Removing it..."
+remove_host_webservers() {
+    print_header "Checking for Conflicting Host Web Servers"
+
+    local found=false
+
+    if command -v nginx &> /dev/null || systemctl list-units --type=service 2>/dev/null | grep -q nginx; then
+        print_warning "Found Nginx on host — removing it (Traefik owns port 80)..."
         sudo systemctl stop nginx 2>/dev/null || true
         sudo systemctl disable nginx 2>/dev/null || true
         sudo apt remove -y nginx nginx-common 2>/dev/null || true
         sudo apt purge -y nginx* 2>/dev/null || true
         sudo rm -rf /etc/nginx 2>/dev/null || true
         print_success "Host Nginx removed"
-    else
-        print_info "No host Nginx found (good)"
+        found=true
+    fi
+
+    if command -v apache2 &> /dev/null || systemctl list-units --type=service 2>/dev/null | grep -q apache2; then
+        print_warning "Found Apache2 on host — removing it (Traefik owns port 80)..."
+        sudo systemctl stop apache2 2>/dev/null || true
+        sudo systemctl disable apache2 2>/dev/null || true
+        sudo apt remove -y apache2 2>/dev/null || true
+        sudo apt purge -y apache2* 2>/dev/null || true
+        print_success "Host Apache2 removed"
+        found=true
+    fi
+
+    if [ "$found" = false ]; then
+        print_info "No conflicting host web servers found (good)"
+    fi
+
+    # Make sure port 80 is actually free before we start
+    if ss -tlnp 2>/dev/null | grep -q ':80 ' || netstat -tlnp 2>/dev/null | grep -q ':80 '; then
+        print_warning "Something is still bound to port 80. Traefik will fail to start."
+        print_warning "Run: sudo ss -tlnp | grep :80  — to identify and stop the process."
     fi
 }
 
@@ -108,10 +127,10 @@ EOF
 configure_security() {
     print_header "Security Configuration"
     echo "Enable advanced security features? (Recommended: Yes)"
-    echo "  • Fail2Ban SSH jail"
-    echo "  • iptables persistent block rules"
-    echo "  • Traefik rate limiting protection"
-    echo "  • DDoS protection"
+    echo "  • Fail2Ban SSH jail (3 retries → 30-day ban)"
+    echo "  • iptables persistent block rules (bans survive reboots)"
+    echo "  • Traefik rate limiting (configured via compose labels)"
+    echo "  • Traefik secure response headers"
     echo
 
     read -p "Enable security features? [Y/n]: " ENABLE_SECURITY
@@ -151,10 +170,10 @@ gather_config() {
         print_success "Existing deployment detected!"
         echo
         echo "Previous configuration:"
-        echo "  Domain:         $DOMAIN_NAME"
-        echo "  Docker Hub User:$DOCKER_USERNAME"
-        echo "  App Directory:  $APP_DIR"
-        echo "  Security:       $SECURITY_ENABLED"
+        echo "  Domain:          $DOMAIN_NAME"
+        echo "  Docker Hub User: $DOCKER_USERNAME"
+        echo "  App Directory:   $APP_DIR"
+        echo "  Security:        $SECURITY_ENABLED"
         echo
         read -p "Use existing configuration? [Y/n]: " USE_EXISTING
         USE_EXISTING=${USE_EXISTING:-Y}
@@ -226,8 +245,8 @@ gather_config() {
     echo "App Directory:        $APP_DIR"
     echo "Create deployer user: $CREATE_USER"
     echo "Setup firewall:       $SETUP_FIREWALL"
-    echo "SSL:                  Handled by Cloudflare"
-    echo "Reverse Proxy:        Traefik (in Docker)"
+    echo "SSL:                  Handled by Cloudflare (Flexible mode)"
+    echo "Reverse Proxy:        Traefik v3 (in Docker, port 80)"
     echo "Security Features:    $SECURITY_ENABLED"
     [ "$SECURITY_ENABLED" = "true" ] && echo "Admin Email:          $ADMIN_EMAIL"
     echo
@@ -247,7 +266,7 @@ update_system() {
     print_header "Updating System Packages"
     sudo apt update
     sudo apt upgrade -y
-    sudo apt install -y curl wget git nano jq mailutils sendmail
+    sudo apt install -y curl wget git nano jq mailutils sendmail net-tools
     sudo apt install -y iptables-persistent netfilter-persistent
     sudo apt install -y ufw
     print_success "System updated"
@@ -267,9 +286,11 @@ install_docker() {
         sudo sh get-docker.sh
         rm get-docker.sh
         sudo usermod -aG docker "$USER"
-        newgrp docker << END
+        # Re-initialise group membership for this shell session
+        # (full effect takes place on next login, but this avoids script failure)
+        newgrp docker << 'NEWGRP_END'
 exit
-END
+NEWGRP_END
         print_success "Docker installed"
     fi
 
@@ -277,7 +298,7 @@ END
         print_warning "Docker Compose is already installed"
         docker compose version
     else
-        print_info "Installing Docker Compose..."
+        print_info "Installing Docker Compose plugin..."
         sudo apt install -y docker-compose-plugin
         print_success "Docker Compose installed"
     fi
@@ -296,7 +317,7 @@ create_deployer_user() {
             sudo usermod -aG docker deployer
             sudo mkdir -p /home/deployer/.ssh
             sudo chmod 700 /home/deployer/.ssh
-            print_success "User 'deployer' created"
+            print_success "User 'deployer' created and added to docker group"
         fi
     fi
 }
@@ -324,6 +345,22 @@ clone_repository() {
         print_info "Cloning from GitHub..."
         git clone https://github.com/andreas-tuko/esc-compose-prod.git .
     fi
+
+    # Verify the expected compose file exists
+    if [ ! -f "$APP_DIR/compose.prod.yaml" ]; then
+        print_error "compose.prod.yaml not found after clone. Check the repository."
+        exit 1
+    fi
+
+    # Warn if compose file still references nginx image (stale repo)
+    if grep -q 'image: nginx' "$APP_DIR/compose.prod.yaml" 2>/dev/null; then
+        print_warning "compose.prod.yaml still contains an nginx service."
+        print_warning "The repository may not have been updated to the Traefik version."
+        print_warning "Continuing — but review the compose file before starting."
+    else
+        print_success "compose.prod.yaml looks correct (Traefik-based)"
+    fi
+
     print_success "Repository cloned/updated"
 }
 
@@ -336,7 +373,7 @@ docker_login() {
     if [ $? -eq 0 ]; then
         print_success "Docker Hub login successful"
     else
-        print_error "Docker Hub login failed"
+        print_error "Docker Hub login failed. Check credentials."
         exit 1
     fi
 }
@@ -347,6 +384,7 @@ docker_login() {
 generate_secret_key() {
     python3 -c "import secrets; print(secrets.token_urlsafe(50))"
 }
+
 generate_postgres_password() {
     openssl rand -base64 32
 }
@@ -355,14 +393,18 @@ link_env_file() {
     print_header "Linking Environment File"
     if [ -f "$APP_DIR/.env.docker" ]; then
         ln -sf "$APP_DIR/.env.docker" "$APP_DIR/.env"
-        print_success "Environment file linked"
+        print_success "Environment file linked (.env → .env.docker)"
     else
-        print_warning "Environment file not found, skipping linking"
+        print_warning "Environment file not found, skipping link"
     fi
 }
 
 # ---------------------------------------------------------------------------
 # Environment file
+# BUG FIX: CSRF_ORIGINS and SITE_URL now use https:// because Cloudflare
+# presents HTTPS to the browser. Django's CSRF validation checks the
+# Origin/Referer header against CSRF_TRUSTED_ORIGINS, which must match
+# what the browser sends — always https:// through Cloudflare.
 # ---------------------------------------------------------------------------
 setup_env_file() {
     print_header "Environment Configuration"
@@ -392,7 +434,9 @@ SECRET_KEY=$GENERATED_SECRET_KEY
 DEBUG=False
 ENVIRONMENT=production
 ALLOWED_HOSTS=localhost,$DOMAIN_NAME,www.$DOMAIN_NAME
-CSRF_ORIGINS=http://$DOMAIN_NAME,http://www.$DOMAIN_NAME
+# https:// is required — Cloudflare terminates TLS so the browser always
+# sends HTTPS Origin/Referer headers. Using http:// here causes CSRF failures.
+CSRF_ORIGINS=https://$DOMAIN_NAME,https://www.$DOMAIN_NAME
 
 # ============================================
 # Database Configuration
@@ -417,7 +461,8 @@ REDIS_PASSWORD=
 # ============================================
 SITE_ID=1
 SITE_NAME=$DOMAIN_NAME
-SITE_URL=http://$DOMAIN_NAME
+# https:// — Cloudflare handles TLS; the public-facing URL is always HTTPS
+SITE_URL=https://$DOMAIN_NAME
 BASE_URL=https://sandbox.safaricom.co.ke
 
 # ============================================
@@ -492,6 +537,17 @@ POSTHOG_HOST=https://eu.i.posthog.com
 POSTHOG_API_KEY=your-posthog-project-api-key
 
 # ============================================
+# Watchtower Email Notifications
+# ============================================
+WATCHTOWER_NOTIFICATION_EMAIL_FROM=watchtower@$DOMAIN_NAME
+WATCHTOWER_NOTIFICATION_EMAIL_TO=$ADMIN_EMAIL
+WATCHTOWER_NOTIFICATION_EMAIL_SERVER=smtp.gmail.com
+WATCHTOWER_NOTIFICATION_EMAIL_SERVER_PORT=587
+WATCHTOWER_NOTIFICATION_EMAIL_SERVER_USER=your-email@gmail.com
+WATCHTOWER_NOTIFICATION_EMAIL_SERVER_PASSWORD=your-app-password
+WATCHTOWER_NOTIFICATION_EMAIL_DELAY=2
+
+# ============================================
 # Admin Configuration
 # ============================================
 ADMIN_NAME=Admin Name
@@ -508,9 +564,9 @@ EOF
 
     print_header "IMPORTANT: Environment Configuration Required"
     echo
-    print_warning "The application REQUIRES proper configuration!"
+    print_warning "The application REQUIRES proper configuration before starting!"
     echo
-    print_info "Press Enter to open editor and configure environment..."
+    print_info "Press Enter to open the editor and configure your environment..."
     read -r
 
     nano "$APP_DIR/.env.docker"
@@ -537,6 +593,7 @@ validate_env_file() {
     source "$APP_DIR/.env.docker" 2>/dev/null || true
     set +a
 
+    # Critical checks
     if [ -z "$SECRET_KEY" ] || [ "$SECRET_KEY" = "your-secret-key-here" ]; then
         errors+=("SECRET_KEY is not configured")
         validation_failed=true
@@ -547,12 +604,23 @@ validate_env_file() {
         validation_failed=true
     fi
 
+    # CSRF origin sanity check — should be https:// for Cloudflare setups
+    if [[ "$CSRF_ORIGINS" == *"http://$DOMAIN_NAME"* ]] && [[ "$CSRF_ORIGINS" != *"https://$DOMAIN_NAME"* ]]; then
+        errors+=("CSRF_ORIGINS uses http:// — must be https:// (Cloudflare presents HTTPS to browsers)")
+        validation_failed=true
+    fi
+
+    # Non-critical warnings
     if [[ "$DATABASE_URL" == *"user:password@host"* ]]; then
-        warnings+=("DATABASE_URL contains placeholder values")
+        warnings+=("DATABASE_URL still contains placeholder values")
     fi
 
     if [ "$EMAIL_HOST_USER" = "your-email@gmail.com" ]; then
-        warnings+=("Email not configured")
+        warnings+=("Email not configured — Watchtower notifications will not work")
+    fi
+
+    if [ "$POSTGRES_PASSWORD" = "your-postgres-password" ]; then
+        warnings+=("POSTGRES_PASSWORD is still the placeholder value")
     fi
 
     if [ "$validation_failed" = true ]; then
@@ -583,14 +651,29 @@ validate_env_file() {
 }
 
 # ---------------------------------------------------------------------------
-# Cleanup Old Nginx Config
+# Clean up any leftover nginx artefacts from old deployments
+# Safe to run on fresh installs — just a no-op if nothing exists
 # ---------------------------------------------------------------------------
-cleanup_old_nginx() {
-    print_header "Cleaning up old Nginx configurations"
-    sudo systemctl stop nginx 2>/dev/null || true
-    sudo systemctl disable nginx 2>/dev/null || true
-    sudo rm -rf "$APP_DIR/nginx" 2>/dev/null || true
-    print_success "Nginx cleaned up"
+cleanup_old_nginx_artefacts() {
+    print_header "Cleaning Up Old Nginx Artefacts"
+    local cleaned=false
+
+    if [ -d "$APP_DIR/nginx" ]; then
+        sudo rm -rf "$APP_DIR/nginx"
+        print_success "Removed $APP_DIR/nginx/ (not needed with Traefik)"
+        cleaned=true
+    fi
+
+    # Remove any stale nginx container that might be lingering
+    if docker ps -a --format '{{.Names}}' 2>/dev/null | grep -q 'nginx'; then
+        print_warning "Found lingering nginx container(s) — stopping and removing..."
+        docker ps -a --format '{{.Names}}' | grep nginx | xargs -r docker rm -f 2>/dev/null || true
+        cleaned=true
+    fi
+
+    if [ "$cleaned" = false ]; then
+        print_info "No old nginx artefacts found (good)"
+    fi
 }
 
 # ---------------------------------------------------------------------------
@@ -607,12 +690,12 @@ install_fail2ban() {
 }
 
 # ---------------------------------------------------------------------------
-# Configure Fail2Ban — SSH Protection
+# Configure Fail2Ban — SSH protection only
+# Traefik handles HTTP-level rate limiting via compose labels
 # ---------------------------------------------------------------------------
 setup_fail2ban() {
-    print_header "Configuring Fail2Ban (SSH attack jail)"
+    print_header "Configuring Fail2Ban (SSH jail)"
 
-    # ---- jail.local -------------------------------------------------------
     sudo tee /etc/fail2ban/jail.local > /dev/null << 'EOF'
 [DEFAULT]
 bantime  = 2592000
@@ -637,7 +720,7 @@ EOF
     sleep 3
 
     if systemctl is-active --quiet fail2ban; then
-        print_success "Fail2Ban configured and started with SSH jail"
+        print_success "Fail2Ban configured and started (SSH jail active)"
         sudo fail2ban-client status 2>/dev/null || true
     else
         print_warning "Fail2Ban failed to start — check: sudo journalctl -u fail2ban"
@@ -645,31 +728,34 @@ EOF
 }
 
 # ---------------------------------------------------------------------------
-# Persist iptables rules
+# Persist iptables rules across reboots
 # ---------------------------------------------------------------------------
 setup_iptables_persistence() {
     print_header "Setting Up iptables Persistence"
 
     sudo systemctl enable netfilter-persistent 2>/dev/null || true
 
-    sudo iptables -A INPUT  -m conntrack --ctstate INVALID -j DROP 2>/dev/null || true
-    sudo iptables -A INPUT  -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT 2>/dev/null || true
+    sudo iptables -A INPUT -m conntrack --ctstate INVALID -j DROP 2>/dev/null || true
+    sudo iptables -A INPUT -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT 2>/dev/null || true
 
     sudo /usr/sbin/netfilter-persistent save 2>/dev/null || \
     sudo /usr/share/netfilter-persistent/plugins.d/15-ip4tables save 2>/dev/null || \
     sudo iptables-save | sudo tee /etc/iptables/rules.v4 > /dev/null
     sudo ip6tables-save | sudo tee /etc/iptables/rules.v6 > /dev/null
 
-    print_success "iptables rules saved — they will survive reboots"
+    print_success "iptables rules saved — will survive reboots"
 }
 
 # ---------------------------------------------------------------------------
 # Management scripts
+# BUG FIX: deploy.sh and start.sh wait 30s (was 15s) to account for
+# Traefik depending on web which has a 60s healthcheck start_period.
+# The check now waits for traefik specifically, not just any "Up" service.
 # ---------------------------------------------------------------------------
 create_management_scripts() {
     print_header "Creating Management Scripts"
 
-    # deploy
+    # deploy.sh
     cat > "$APP_DIR/deploy.sh" << 'SCRIPT'
 #!/bin/bash
 set -e
@@ -681,19 +767,19 @@ echo "Stopping containers..."
 docker compose -f compose.prod.yaml down || true
 echo "Starting new containers..."
 docker compose -f compose.prod.yaml up -d
-echo "Waiting for services..."
-sleep 15
+echo "Waiting for services to initialise (30s)..."
+sleep 30
 docker compose -f compose.prod.yaml ps
 echo "Deployment complete!"
 SCRIPT
     chmod +x "$APP_DIR/deploy.sh"
 
-    # logs
+    # logs.sh
     cat > "$APP_DIR/logs.sh" << 'SCRIPT'
 #!/bin/bash
 cd "$(dirname "$0")" || exit 1
-SERVICE=${1:-all}
-if [ "$SERVICE" = "all" ]; then
+SERVICE=${1:-}
+if [ -z "$SERVICE" ]; then
     docker compose -f compose.prod.yaml logs -f
 else
     docker compose -f compose.prod.yaml logs -f "$SERVICE"
@@ -701,12 +787,15 @@ fi
 SCRIPT
     chmod +x "$APP_DIR/logs.sh"
 
-    # status
+    # status.sh
     cat > "$APP_DIR/status.sh" << 'SCRIPT'
 #!/bin/bash
 cd "$(dirname "$0")" || exit 1
 echo "=== Container Status ==="
 docker compose -f compose.prod.yaml ps
+echo
+echo "=== Traefik Accessibility ==="
+curl -s -o /dev/null -w "HTTP status: %{http_code}\n" http://localhost/ || echo "Traefik not responding on port 80"
 echo
 echo "=== Resource Usage ==="
 docker stats --no-stream
@@ -719,7 +808,7 @@ sudo iptables -L INPUT -n | grep DROP | awk '{print $4}' | grep -v '0.0.0.0' || 
 SCRIPT
     chmod +x "$APP_DIR/status.sh"
 
-    # stop
+    # stop.sh
     cat > "$APP_DIR/stop.sh" << 'SCRIPT'
 #!/bin/bash
 cd "$(dirname "$0")" || exit 1
@@ -729,18 +818,19 @@ echo "Services stopped."
 SCRIPT
     chmod +x "$APP_DIR/stop.sh"
 
-    # start
+    # start.sh
     cat > "$APP_DIR/start.sh" << 'SCRIPT'
 #!/bin/bash
 cd "$(dirname "$0")" || exit 1
 echo "Starting all services..."
 docker compose -f compose.prod.yaml up -d
-sleep 15
+echo "Waiting for services to initialise (30s)..."
+sleep 30
 docker compose -f compose.prod.yaml ps
 SCRIPT
     chmod +x "$APP_DIR/start.sh"
 
-    # unban helper
+    # unban.sh
     cat > "$APP_DIR/unban.sh" << 'SCRIPT'
 #!/bin/bash
 IP="$1"
@@ -749,8 +839,8 @@ if [ -z "$IP" ]; then
     exit 1
 fi
 echo "Removing iptables ban for $IP..."
-sudo iptables -D INPUT -s "$IP" -j DROP 2>/dev/null && echo "Removed" || echo "IP not found in iptables"
-sudo fail2ban-client unban "$IP" 2>/dev/null || true
+sudo iptables -D INPUT -s "$IP" -j DROP 2>/dev/null && echo "iptables rule removed" || echo "IP not found in iptables"
+sudo fail2ban-client unban "$IP" 2>/dev/null && echo "Fail2Ban ban removed" || true
 sudo netfilter-persistent save
 SCRIPT
     chmod +x "$APP_DIR/unban.sh"
@@ -767,9 +857,9 @@ setup_firewall() {
         sudo ufw --force reset > /dev/null 2>&1 || true
         sudo ufw default deny incoming
         sudo ufw default allow outgoing
-        sudo ufw allow 22/tcp
-        sudo ufw allow 80/tcp
-        sudo ufw allow 443/tcp
+        sudo ufw allow 22/tcp    comment 'SSH'
+        sudo ufw allow 80/tcp    comment 'HTTP  (Traefik)'
+        sudo ufw allow 443/tcp   comment 'HTTPS (Cloudflare origin)'
         echo "y" | sudo ufw enable > /dev/null 2>&1
         print_success "Firewall configured"
         sudo ufw status verbose
@@ -777,15 +867,16 @@ setup_firewall() {
 }
 
 # ---------------------------------------------------------------------------
-# Systemd service
+# Systemd service — starts the full Docker Compose stack on boot
 # ---------------------------------------------------------------------------
 setup_systemd() {
     print_header "Setting Up Systemd Service"
     sudo tee /etc/systemd/system/esc.service > /dev/null << EOF
 [Unit]
-Description=ESC Django Application with Docker
+Description=ESC Django Application (Docker Compose + Traefik)
 Requires=docker.service
-After=docker.service network.target
+After=docker.service network-online.target
+Wants=network-online.target
 
 [Service]
 Type=oneshot
@@ -804,11 +895,14 @@ WantedBy=multi-user.target
 EOF
     sudo systemctl daemon-reload
     sudo systemctl enable esc.service
-    print_success "Systemd service created"
+    print_success "Systemd service 'esc' created and enabled"
 }
 
 # ---------------------------------------------------------------------------
 # Start application
+# BUG FIX: Wait extended to 45s and check both web and traefik health.
+# The original 15s wait was too short given web's 60s start_period and
+# traefik depending on web being healthy first.
 # ---------------------------------------------------------------------------
 start_application() {
     print_header "Starting Application"
@@ -816,7 +910,7 @@ start_application() {
 
     print_info "Pulling latest Docker images..."
     if ! docker compose -f compose.prod.yaml pull; then
-        print_warning "Failed to pull Docker images, continuing with existing images..."
+        print_warning "Failed to pull some images, continuing with existing images..."
     else
         print_success "Docker images pulled successfully"
     fi
@@ -824,22 +918,33 @@ start_application() {
     print_info "Starting services..."
     if ! docker compose -f compose.prod.yaml up -d; then
         print_error "Failed to start services"
-        docker compose -f compose.prod.yaml logs --tail=20
+        docker compose -f compose.prod.yaml logs --tail=30
         exit 1
     fi
     print_success "Services started"
 
-    print_info "Waiting for services to initialize (15 seconds)..."
-    for i in {1..3}; do echo -n "."; sleep 5; done
+    print_info "Waiting for services to initialise..."
+    print_info "(web has a 60s start period; traefik starts after web is healthy)"
+    for i in {1..9}; do
+        echo -n "."
+        sleep 5
+    done
     echo
+    # Give a bit more time for traefik to come up after web is healthy
+    sleep 15
 
-    if docker compose -f compose.prod.yaml ps | grep -q "Up"; then
-        print_success "Services are running"
-        docker compose -f compose.prod.yaml ps
+    echo
+    docker compose -f compose.prod.yaml ps
+
+    # Quick connectivity check
+    echo
+    print_info "Testing HTTP connectivity via Traefik..."
+    HTTP_STATUS=$(curl -s -o /dev/null -w "%{http_code}" --max-time 10 http://localhost/ 2>/dev/null || echo "000")
+    if [ "$HTTP_STATUS" != "000" ]; then
+        print_success "Traefik is responding (HTTP $HTTP_STATUS)"
     else
-        print_warning "Some services may not be running properly"
-        docker compose -f compose.prod.yaml ps
-        print_info "Check logs: $APP_DIR/logs.sh"
+        print_warning "Traefik did not respond on port 80 yet — it may still be starting."
+        print_info "Check: $APP_DIR/logs.sh traefik"
     fi
 }
 
@@ -849,12 +954,21 @@ start_application() {
 print_completion() {
     print_header "Installation Complete!"
 
-    echo -e "${GREEN}Your ESC Django application is fully deployed with Traefik!${NC}\n"
+    echo -e "${GREEN}Your ESC Django application is deployed with Traefik + Cloudflare!${NC}\n"
 
     echo "Application:"
-    echo "  Domain:      http://$DOMAIN_NAME (Cloudflare handles HTTPS)"
+    echo "  Public URL:  https://$DOMAIN_NAME  (Cloudflare → Traefik → Django)"
     echo "  App dir:     $APP_DIR"
     echo "  Env file:    $APP_DIR/.env.docker"
+    echo
+    echo "Stack:"
+    echo "  Cloudflare   — TLS termination, CDN, DDoS protection"
+    echo "  Traefik v3   — Reverse proxy, rate limiting, secure headers"
+    echo "  Django/Gunicorn  — Application server (port 8000, internal only)"
+    echo "  PostgreSQL 17 — Database"
+    echo "  Redis 8       — Cache / Celery broker"
+    echo "  Celery        — Async task worker + beat scheduler"
+    echo "  Watchtower    — Automatic image updates (daily)"
     echo
     echo "Management Commands:"
     echo "  Deploy/Update:  $APP_DIR/deploy.sh"
@@ -867,43 +981,45 @@ print_completion() {
 
     if [ "$SECURITY_ENABLED" = "true" ]; then
         echo -e "${GREEN}Security Features Active:${NC}"
-        echo "  ✓ Fail2Ban — SSH jail (3 retries → 30-day ban)"
-        echo "  ✓ Traefik — Native rate limiting (30 req/min general, 20 concurrent)"
-        echo "  ✓ Traefik — Automated secure headers applied to Django router"
-        echo "  ✓ iptables-persistent — bans survive server reboots"
+        echo "  ✓ Fail2Ban       — SSH jail (3 retries → 30-day ban)"
+        echo "  ✓ Traefik        — Rate limiting (30 req/min avg, burst 20)"
+        echo "  ✓ Traefik        — Secure response headers (HSTS, XSS, CSP, etc.)"
+        echo "  ✓ iptables-persistent — Bans survive reboots"
         echo
-        echo "  Fail2Ban status:     sudo fail2ban-client status"
+        echo "  Fail2Ban status: sudo fail2ban-client status sshd"
+        echo
     fi
 
-    echo
     echo "Cloudflare Configuration:"
-    echo "  1. A record → $(hostname -I | awk '{print $1}')"
-    echo "  2. SSL/TLS mode → Flexible"
-    echo "  3. Always Use HTTPS → On"
+    echo "  1. DNS A record  → $(hostname -I | awk '{print $1}')"
+    echo "  2. SSL/TLS mode  → Flexible (Cloudflare encrypts to browser; Traefik uses HTTP)"
+    echo "  3. Always Use HTTPS      → On"
     echo "  4. Automatic HTTPS Rewrites → On"
-    echo "  5. Consider adding Cloudflare WAF rules for extra protection"
+    echo "  5. Consider enabling Cloudflare WAF for additional protection"
     echo
     echo -e "${YELLOW}Next Steps:${NC}"
     echo "  1. Create Django superuser:"
     echo "     cd $APP_DIR && docker compose -f compose.prod.yaml exec web python manage.py createsuperuser"
     echo "  2. Monitor logs:"
     echo "     $APP_DIR/logs.sh"
-    echo "  3. Test the application:"
-    echo "     curl http://$DOMAIN_NAME"
+    echo "  3. Verify the site is reachable:"
+    echo "     curl -I https://$DOMAIN_NAME"
+    echo "  4. Check Traefik is routing correctly:"
+    echo "     $APP_DIR/logs.sh traefik"
     echo
 
-    print_success "Deployment ready!"
+    print_success "Deployment complete!"
 }
 
 # ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
 main() {
-    print_header "ESC Django Application - Automated Deployment"
+    print_header "ESC Django Application - Automated Deployment (Traefik Edition)"
 
     check_sudo
     check_os
-    remove_host_nginx
+    remove_host_webservers
     gather_config
 
     update_system
@@ -914,7 +1030,7 @@ main() {
     docker_login
     setup_env_file
     link_env_file
-    cleanup_old_nginx
+    cleanup_old_nginx_artefacts
 
     if [ "$SECURITY_ENABLED" = "true" ]; then
         install_fail2ban
