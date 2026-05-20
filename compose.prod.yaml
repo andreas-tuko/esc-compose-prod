@@ -103,8 +103,8 @@ services:
       interval: 30s
       timeout: 10s
       retries: 3
-      start_period: 60s
-      start_interval: 2s
+      start_period: 240s   # was 60s — build.sh runs migrations/seeds before gunicorn starts
+      start_interval: 5s   # was 2s — no need to hammer it every 2s during startup
     logging:
       driver: json-file
       options:
