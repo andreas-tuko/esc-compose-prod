@@ -336,11 +336,16 @@ setup_app_directory() {
 # Clone repo
 # ---------------------------------------------------------------------------
 clone_repository() {
-    print_header "Cloning Repository"
+    print_header "Cloning Repository."
     cd "$APP_DIR" || exit 1
     if [ -d ".git" ]; then
-        print_warning "Repository already exists, pulling latest changes..."
-        git pull origin main 2>/dev/null || git pull origin master 2>/dev/null || true
+        print_warning "Repository already exists, resetting to latest remote..."
+        git fetch origin
+        git reset --hard origin/main 2>/dev/null || git reset --hard origin/master 2>/dev/null || {
+            print_error "Failed to reset repository to remote state."
+            exit 1
+        }
+        git clean -fd  # remove untracked files/dirs (e.g. leftover nginx/)
     else
         print_info "Cloning from GitHub..."
         git clone https://github.com/andreas-tuko/esc-compose-prod.git .
