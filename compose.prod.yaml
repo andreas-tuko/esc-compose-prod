@@ -87,6 +87,8 @@ services:
     depends_on:
       web:
         condition: service_healthy   # migrations are guaranteed done at this point
+      traefik:
+        condition: service_healthy
     command: ["./seed.sh"]
     volumes:
       - geoip:/app/geoip
@@ -210,8 +212,6 @@ services:
       env_file:
         - .env.docker
       depends_on:
-        web:
-          condition: service_healthy
         redis:
           condition: service_healthy
         postgres:
@@ -244,14 +244,12 @@ services:
     env_file:
       - .env.docker
     depends_on:
-      web:
-        condition: service_healthy
       redis:
-        condition: service_healthy
-      celery_worker:
         condition: service_healthy
       postgres:
         condition: service_healthy
+      celery_worker:
+        condition: service_healthy        
     volumes:
       - geoip:/app/geoip
     security_opt:
