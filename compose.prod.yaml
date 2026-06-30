@@ -128,7 +128,7 @@ services:
       interval: 30s
       timeout: 10s
       retries: 3
-      start_period: 120s   # reduced from 240s — no seeds in build.sh anymore
+      start_period: 180s   # reduced from 240s — no seeds in build.sh anymore
       start_interval: 5s
     logging:
       driver: json-file
