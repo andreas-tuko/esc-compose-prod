@@ -197,6 +197,7 @@ services:
           interval: 30s
           timeout: 5s
           retries: 3
+          start_period: 180s 
       security_opt:
         - no-new-privileges:true
       labels:
