@@ -78,33 +78,7 @@ services:
         reservations:
           cpus: "0.05"
           memory: 128M
-  
-  seeder:
-    image: andreastuko/esc:latest
-    restart: "no"
-    env_file:
-      - .env.docker
-    depends_on:
-      web:
-        condition: service_healthy   # migrations are guaranteed done at this point
-      traefik:
-        condition: service_healthy
-    command: ["./seed.sh"]
-    volumes:
-      - geoip:/app/geoip
-    security_opt:
-      - no-new-privileges:true
-    deploy:
-      restart_policy:
-        condition: none
-      resources:
-        limits:
-          cpus: "0.5"
-          memory: 256M
-        reservations:
-          cpus: "0.05"
-          memory: 128M
-
+          
   web:
     image: andreastuko/esc:latest
     restart: unless-stopped
@@ -128,7 +102,7 @@ services:
       interval: 30s
       timeout: 10s
       retries: 3
-      start_period: 180s   # reduced from 240s — no seeds in build.sh anymore
+      start_period: 120s   # reduced from 240s — no seeds in build.sh anymore
       start_interval: 5s
     logging:
       driver: json-file
@@ -223,7 +197,7 @@ services:
         interval: 30s
         timeout: 10s
         retries: 3
-        start_period: 200s
+        start_period: 180s
       security_opt:
         - no-new-privileges:true
       labels:
