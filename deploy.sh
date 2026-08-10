@@ -567,14 +567,14 @@ WATCHTOWER_NOTIFICATION_EMAIL_DELAY=2
 # ============================================
 # Admin Configuration
 # ============================================
-ADMIN_NAME=Admin Name
-ADMIN_EMAIL=admin@$DOMAIN_NAME
+ADMIN_NAME="Admin Name"
+ADMIN_EMAIL="admin@$DOMAIN_NAME"
 
 # ============================================
 # Cloudflare Origin SSL / API Configuration
 # ============================================
-CLOUDFLARE_API_TOKEN=$CLOUDFLARE_API_TOKEN
-CLOUDFLARE_ORIGIN_CA_KEY=$CLOUDFLARE_ORIGIN_CA_KEY
+CLOUDFLARE_API_TOKEN="$CLOUDFLARE_API_TOKEN"
+CLOUDFLARE_ORIGIN_CA_KEY="$CLOUDFLARE_ORIGIN_CA_KEY"
 
 # ============================================
 # Python Configuration
@@ -906,18 +906,23 @@ print_success() { echo -e "${GREEN}[SUCCESS]${NC} $1"; }
 print_warning() { echo -e "${YELLOW}[WARNING]${NC} $1"; }
 print_error() { echo -e "${RED}[ERROR]${NC} $1"; }
 
-# Load environment file if present
-if [ -f "$ENV_FILE" ]; then
-    set -a
-    # shellcheck disable=SC1090
-    source "$ENV_FILE"
-    set +a
-elif [ -f "$SCRIPT_DIR/.env" ]; then
-    set -a
-    # shellcheck disable=SC1091
-    source "$SCRIPT_DIR/.env"
-    set +a
-fi
+# Safely extract environment variables without executing .env files
+get_env_val() {
+    local key="$1"
+    local target_file=""
+    if [ -f "$ENV_FILE" ]; then
+        target_file="$ENV_FILE"
+    elif [ -f "$SCRIPT_DIR/.env" ]; then
+        target_file="$SCRIPT_DIR/.env"
+    fi
+    if [ -n "$target_file" ]; then
+        grep -E "^${key}=" "$target_file" 2>/dev/null | head -n1 | cut -d'=' -f2- | sed -e 's/^"//' -e 's/"$//' -e "s/^'//" -e "s/'$//"
+    fi
+}
+
+CLOUDFLARE_API_TOKEN="${CLOUDFLARE_API_TOKEN:-$(get_env_val "CLOUDFLARE_API_TOKEN")}"
+CLOUDFLARE_ORIGIN_CA_KEY="${CLOUDFLARE_ORIGIN_CA_KEY:-$(get_env_val "CLOUDFLARE_ORIGIN_CA_KEY")}"
+DOMAIN_NAME="${DOMAIN_NAME:-$(get_env_val "DOMAIN_NAME")}"
 
 DOMAIN="${DOMAIN_NAME:-bamburiescorts.com}"
 VALIDITY_DAYS=5475 # 15 years
