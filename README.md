@@ -129,6 +129,13 @@ docker compose -f compose.prod.yaml up -d
 - Old containers remain active until new ones are healthy
 - Start period allows full Django initialization
 
+## SSL Management (Cloudflare Origin CA)
+
+- **Automated Generation**: Certificates are issued via Cloudflare API (`POST /certificates`) during `deploy.sh`.
+- **Zero-Downtime Renewal**: Traefik automatically watches `./certs` and `traefik-dynamic.yaml` for instantaneous reloads without container restarts.
+- **Check Certificate Status**: `./ssl.sh status`
+- **Force Certificate Renewal**: `./ssl.sh renew`
+
 ## Monitoring
 
 ```bash

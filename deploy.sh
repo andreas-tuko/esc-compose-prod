@@ -227,6 +227,18 @@ gather_config() {
     read -p "Application directory [$DEFAULT_APP_DIR]: " APP_DIR
     APP_DIR=${APP_DIR:-$DEFAULT_APP_DIR}
 
+    print_info "Cloudflare API Token or Origin CA Key is required for Origin SSL generation"
+    if [ -n "$CLOUDFLARE_API_TOKEN" ]; then
+        read -p "Cloudflare API Token [$CLOUDFLARE_API_TOKEN]: " NEW_CF_TOKEN
+        CLOUDFLARE_API_TOKEN=${NEW_CF_TOKEN:-$CLOUDFLARE_API_TOKEN}
+    else
+        read -p "Cloudflare API Token (press Enter to skip if using Origin CA Key): " CLOUDFLARE_API_TOKEN
+    fi
+
+    if [ -z "$CLOUDFLARE_API_TOKEN" ] && [ -z "$CLOUDFLARE_ORIGIN_CA_KEY" ]; then
+        read -p "Cloudflare Origin CA Key: " CLOUDFLARE_ORIGIN_CA_KEY
+    fi
+
     if [ "$EXISTING_CONFIG" != true ]; then
         read -p "Create a dedicated 'deployer' user? (recommended) [Y/n]: " CREATE_USER
         CREATE_USER=${CREATE_USER:-Y}
@@ -245,7 +257,7 @@ gather_config() {
     echo "App Directory:        $APP_DIR"
     echo "Create deployer user: $CREATE_USER"
     echo "Setup firewall:       $SETUP_FIREWALL"
-    echo "SSL:                  Traefik ACME Let's Encrypt (Full/Strict mode)"
+    echo "SSL:                  Cloudflare Origin CA (15-Year API Generated)"
     echo "Reverse Proxy:        Traefik v3 (in Docker, ports 80 & 443)"
     echo "Security Features:    $SECURITY_ENABLED"
     [ "$SECURITY_ENABLED" = "true" ] && echo "Admin Email:          $ADMIN_EMAIL"
@@ -559,9 +571,10 @@ ADMIN_NAME=Admin Name
 ADMIN_EMAIL=admin@$DOMAIN_NAME
 
 # ============================================
-# Traefik SSL / ACME Configuration
+# Cloudflare Origin SSL / API Configuration
 # ============================================
-ACME_EMAIL=$ADMIN_EMAIL
+CLOUDFLARE_API_TOKEN=$CLOUDFLARE_API_TOKEN
+CLOUDFLARE_ORIGIN_CA_KEY=$CLOUDFLARE_ORIGIN_CA_KEY
 
 # ============================================
 # Python Configuration
@@ -855,6 +868,228 @@ sudo netfilter-persistent save
 SCRIPT
     chmod +x "$APP_DIR/unban.sh"
 
+    chmod +x "$APP_DIR/unban.sh"
+
+    # traefik-dynamic.yaml
+    cat > "$APP_DIR/traefik-dynamic.yaml" << 'EOF'
+# ==============================================================================
+# Traefik Dynamic TLS Configuration - Cloudflare Origin CA
+# ==============================================================================
+tls:
+  certificates:
+    - certFile: /etc/traefik/certs/origin.crt
+      keyFile: /etc/traefik/certs/origin.key
+EOF
+
+    # ssl.sh - Dedicated SSL Management Script
+    cat > "$APP_DIR/ssl.sh" << 'SCRIPT'
+#!/bin/bash
+# ==============================================================================
+# Cloudflare Origin CA SSL Management Script
+# Zero-Downtime Certificate Generation & Renewal for Traefik
+# ==============================================================================
+
+set -e
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+CERTS_DIR="$SCRIPT_DIR/certs"
+ENV_FILE="$SCRIPT_DIR/.env.docker"
+
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
+NC='\033[0m' # No Color
+
+print_info() { echo -e "${BLUE}[INFO]${NC} $1"; }
+print_success() { echo -e "${GREEN}[SUCCESS]${NC} $1"; }
+print_warning() { echo -e "${YELLOW}[WARNING]${NC} $1"; }
+print_error() { echo -e "${RED}[ERROR]${NC} $1"; }
+
+# Load environment file if present
+if [ -f "$ENV_FILE" ]; then
+    set -a
+    # shellcheck disable=SC1090
+    source "$ENV_FILE"
+    set +a
+elif [ -f "$SCRIPT_DIR/.env" ]; then
+    set -a
+    # shellcheck disable=SC1091
+    source "$SCRIPT_DIR/.env"
+    set +a
+fi
+
+DOMAIN="${DOMAIN_NAME:-bamburiescorts.com}"
+VALIDITY_DAYS=5475 # 15 years
+
+check_dependencies() {
+    for cmd in openssl curl jq; do
+        if ! command -v "$cmd" &> /dev/null; then
+            print_error "Required tool '$cmd' is not installed. Please install it to proceed."
+            exit 1
+        fi
+    done
+}
+
+get_auth_header() {
+    if [ -n "$CLOUDFLARE_API_TOKEN" ]; then
+        echo "-H|Authorization: Bearer $CLOUDFLARE_API_TOKEN"
+    elif [ -n "$CLOUDFLARE_ORIGIN_CA_KEY" ]; then
+        echo "-H|X-Auth-User-Service-Key: $CLOUDFLARE_ORIGIN_CA_KEY"
+    else
+        echo ""
+    fi
+}
+
+generate_certificate() {
+    local FORCE="${1:-false}"
+
+    mkdir -p "$CERTS_DIR"
+
+    if [ "$FORCE" != "true" ] && [ -f "$CERTS_DIR/origin.crt" ] && [ -f "$CERTS_DIR/origin.key" ]; then
+        print_info "Origin CA Certificate already exists at $CERTS_DIR/origin.crt"
+        check_status
+        return 0
+    fi
+
+    AUTH_INFO=$(get_auth_header)
+    if [ -z "$AUTH_INFO" ]; then
+        print_error "Neither CLOUDFLARE_API_TOKEN nor CLOUDFLARE_ORIGIN_CA_KEY is set in environment or .env.docker."
+        print_info "Please set CLOUDFLARE_API_TOKEN (with Zone.SSL permissions) or CLOUDFLARE_ORIGIN_CA_KEY."
+        exit 1
+    fi
+
+    HEADER_KEY=$(echo "$AUTH_INFO" | cut -d'|' -f2 | cut -d':' -f1)
+    HEADER_VAL=$(echo "$AUTH_INFO" | cut -d'|' -f2 | cut -d':' -f2- | xargs)
+
+    print_info "Generating 2048-bit RSA Private Key & CSR for $DOMAIN..."
+    
+    cat > "$CERTS_DIR/openssl.cnf" << EOF_SSL
+[req]
+distinguished_name = req_distinguished_name
+req_extensions = v3_req
+prompt = no
+
+[req_distinguished_name]
+CN = ${DOMAIN}
+
+[v3_req]
+keyUsage = keyEncipherment, dataEncipherment
+extendedKeyUsage = serverAuth
+subjectAltName = @alt_names
+
+[alt_names]
+DNS.1 = ${DOMAIN}
+DNS.2 = *.${DOMAIN}
+EOF_SSL
+
+    openssl genrsa -out "$CERTS_DIR/origin.key" 2048 > /dev/null 2>&1
+    openssl req -new -key "$CERTS_DIR/origin.key" -out "$CERTS_DIR/origin.csr" -config "$CERTS_DIR/openssl.cnf" > /dev/null 2>&1
+
+    CSR_JSON=$(jq -s -R . "$CERTS_DIR/origin.csr")
+
+    print_info "Requesting Origin CA Certificate from Cloudflare API..."
+
+    PAYLOAD=$(jq -n \
+        --arg domain "$DOMAIN" \
+        --arg wildcard "*.$DOMAIN" \
+        --arg json_csr "$CSR_JSON" \
+        --argjson validity "$VALIDITY_DAYS" \
+        '{
+            hostnames: [$domain, $wildcard],
+            requested_validity: $validity,
+            request_type: "origin-rsa",
+            csr: ($json_csr | fromjson)
+        }')
+
+    RESPONSE=$(curl -s -X POST "https://api.cloudflare.com/client/v4/certificates" \
+        -H "$HEADER_KEY: $HEADER_VAL" \
+        -H "Content-Type: application/json" \
+        -d "$PAYLOAD")
+
+    SUCCESS=$(echo "$RESPONSE" | jq -r '.success // false')
+
+    if [ "$SUCCESS" = "true" ]; then
+        echo "$RESPONSE" | jq -r '.result.certificate' > "$CERTS_DIR/origin.crt"
+        rm -f "$CERTS_DIR/origin.csr" "$CERTS_DIR/openssl.cnf"
+        chmod 600 "$CERTS_DIR/origin.key"
+        chmod 644 "$CERTS_DIR/origin.crt"
+
+        print_success "Cloudflare Origin CA Certificate successfully generated & installed in $CERTS_DIR/"
+        print_info "Traefik will automatically pick up the new certificate with ZERO downtime!"
+    else
+        ERRORS=$(echo "$RESPONSE" | jq -r '.errors[]?.message // "Unknown error"')
+        print_error "Failed to generate Cloudflare Origin CA Certificate: $ERRORS"
+        rm -f "$CERTS_DIR/origin.csr" "$CERTS_DIR/openssl.cnf"
+        exit 1
+    fi
+}
+
+check_status() {
+    if [ ! -f "$CERTS_DIR/origin.crt" ] || [ ! -f "$CERTS_DIR/origin.key" ]; then
+        print_warning "SSL Certificate files missing in $CERTS_DIR/"
+        echo "  Run '$0 generate' to fetch certificates from Cloudflare API."
+        return 1
+    fi
+
+    print_success "Origin CA Certificate Status:"
+    echo "  Location:    $CERTS_DIR/origin.crt"
+    echo "  Private Key: $CERTS_DIR/origin.key"
+    
+    EXP_DATE=$(openssl x509 -enddate -noout -in "$CERTS_DIR/origin.crt" | cut -d'=' -f2)
+    ISSUER=$(openssl x509 -issuer -noout -in "$CERTS_DIR/origin.crt" | sed 's/issuer=//')
+    SANS=$(openssl x509 -text -noout -in "$CERTS_DIR/origin.crt" | grep -A1 "Subject Alternative Name" | tail -n1 | xargs || echo "N/A")
+
+    echo "  Issuer:      $ISSUER"
+    echo "  Expires On:  $EXP_DATE"
+    echo "  SANs:        $SANS"
+}
+
+renew_certificate() {
+    print_info "Forcing Cloudflare Origin CA Certificate Renewal..."
+    generate_certificate true
+}
+
+show_help() {
+    echo "Cloudflare Origin CA SSL Management Script"
+    echo "Usage: $0 [command]"
+    echo
+    echo "Commands:"
+    echo "  generate    Generate SSL certificate via Cloudflare API if missing"
+    echo "  renew       Force renewal of SSL certificate via Cloudflare API (Zero-downtime)"
+    echo "  status      Check existing SSL certificate validity and details"
+    echo "  help        Show this help message"
+}
+
+check_dependencies
+
+case "${1:-generate}" in
+    generate)
+        generate_certificate false
+        ;;
+    renew|force)
+        renew_certificate
+        ;;
+    status)
+        check_status
+        ;;
+    help|--help|-h)
+        show_help
+        ;;
+    *)
+        print_error "Unknown command: $1"
+        show_help
+        exit 1
+        ;;
+esac
+SCRIPT
+    chmod +x "$APP_DIR/ssl.sh"
+
+    mkdir -p "$APP_DIR/certs"
+
+    print_info "Generating Cloudflare Origin CA certificate..."
+    "$APP_DIR/ssl.sh" generate || print_warning "SSL generation deferred — please configure CLOUDFLARE_API_TOKEN in .env.docker and run '$APP_DIR/ssl.sh generate'"
+
     print_success "Management scripts created in $APP_DIR/"
 }
 
@@ -982,6 +1217,8 @@ print_completion() {
     echo
     echo "Management Commands:"
     echo "  Deploy/Update:  $APP_DIR/deploy.sh"
+    echo "  SSL Status:     $APP_DIR/ssl.sh status"
+    echo "  Renew SSL:      $APP_DIR/ssl.sh renew"
     echo "  View Logs:      $APP_DIR/logs.sh [service]"
     echo "  Check Status:   $APP_DIR/status.sh"
     echo "  Stop Services:  $APP_DIR/stop.sh"
@@ -1002,7 +1239,7 @@ print_completion() {
 
     echo "Cloudflare Configuration:"
     echo "  1. DNS A record  → $(hostname -I | awk '{print $1}')"
-    echo "  2. SSL/TLS mode  → Full (Strict) (Traefik provides valid Let's Encrypt SSL)"
+    echo "  2. SSL/TLS mode  → Full (Strict) (Origin CA SSL installed on Traefik)"
     echo "  3. Always Use HTTPS      → On"
     echo "  4. Automatic HTTPS Rewrites → On"
     echo "  5. Consider enabling Cloudflare WAF for additional protection"
