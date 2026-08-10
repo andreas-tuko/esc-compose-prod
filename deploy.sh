@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # ESC Django Application - Automated Deployment Script (Traefik Edition)
-# Cloudflare handles all SSL - Traefik runs in Docker
+# End-to-End SSL via Traefik (Let's Encrypt / ACME) + Cloudflare Full (Strict) Support
 # Includes: Docker, Traefik, Fail2Ban (SSH protection), Rate Limiting, and Headers
 
 set -e
@@ -245,8 +245,8 @@ gather_config() {
     echo "App Directory:        $APP_DIR"
     echo "Create deployer user: $CREATE_USER"
     echo "Setup firewall:       $SETUP_FIREWALL"
-    echo "SSL:                  Handled by Cloudflare (Flexible mode)"
-    echo "Reverse Proxy:        Traefik v3 (in Docker, port 80)"
+    echo "SSL:                  Traefik ACME Let's Encrypt (Full/Strict mode)"
+    echo "Reverse Proxy:        Traefik v3 (in Docker, ports 80 & 443)"
     echo "Security Features:    $SECURITY_ENABLED"
     [ "$SECURITY_ENABLED" = "true" ] && echo "Admin Email:          $ADMIN_EMAIL"
     echo
@@ -559,6 +559,11 @@ ADMIN_NAME=Admin Name
 ADMIN_EMAIL=admin@$DOMAIN_NAME
 
 # ============================================
+# Traefik SSL / ACME Configuration
+# ============================================
+ACME_EMAIL=$ADMIN_EMAIL
+
+# ============================================
 # Python Configuration
 # ============================================
 PYTHON_VERSION=3.13.5
@@ -864,7 +869,7 @@ setup_firewall() {
         sudo ufw default allow outgoing
         sudo ufw allow 22/tcp    comment 'SSH'
         sudo ufw allow 80/tcp    comment 'HTTP  (Traefik)'
-        sudo ufw allow 443/tcp   comment 'HTTPS (Cloudflare origin)'
+        sudo ufw allow 443/tcp   comment 'HTTPS (Traefik SSL)'
         echo "y" | sudo ufw enable > /dev/null 2>&1
         print_success "Firewall configured"
         sudo ufw status verbose
@@ -997,7 +1002,7 @@ print_completion() {
 
     echo "Cloudflare Configuration:"
     echo "  1. DNS A record  → $(hostname -I | awk '{print $1}')"
-    echo "  2. SSL/TLS mode  → Flexible (Cloudflare encrypts to browser; Traefik uses HTTP)"
+    echo "  2. SSL/TLS mode  → Full (Strict) (Traefik provides valid Let's Encrypt SSL)"
     echo "  3. Always Use HTTPS      → On"
     echo "  4. Automatic HTTPS Rewrites → On"
     echo "  5. Consider enabling Cloudflare WAF for additional protection"

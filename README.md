@@ -10,8 +10,7 @@ A Django-based web application with Celery workers, Redis for caching and queuin
 - **Redis**: Cache and message broker
 - **PostgreSQL**: Primary database (internal), Analytics database (external)
 - **Cloudflare R2**: Storage for static files and media
-- **Nginx**: Reverse proxy
-
+- **Traefik**: Reverse proxy with automatic Let's Encrypt SSL/TLS certificates
 
 ## Prerequisites
 
@@ -21,7 +20,6 @@ A Django-based web application with Celery workers, Redis for caching and queuin
 - M-Pesa API credentials
 - Sentry account (optional)
 - PostHog account (optional)
-- Nginx
 
 ## Environment Configuration
 
@@ -97,6 +95,7 @@ POSTHOG_API_KEY=your-posthog-project-api-key
 
 ADMIN_NAME=Admin Name
 ADMIN_EMAIL=admin@yourdomain.com
+ACME_EMAIL=admin@yourdomain.com
 
 PYTHON_VERSION=3.13.5
 UID=1000
@@ -113,32 +112,32 @@ docker pull andreastuko/esc:latest
 Start services:
 
 ```bash
-docker compose up -d
+docker compose -f compose.prod.yaml up -d
 ```
 
 Update production:
 
 ```bash
 docker pull andreastuko/esc:latest
-docker compose up -d
+docker compose -f compose.prod.yaml up -d
 ```
 
 ## Zero-Downtime Deployments
 
-* Web service uses internal port exposure instead of direct port mapping
-* Traefik handles routing and health checks
-* Old containers remain active until new ones are healthy
-* Start period allows full Django initialization
+- Web service uses internal port exposure instead of direct port mapping
+- Traefik handles routing and health checks
+- Old containers remain active until new ones are healthy
+- Start period allows full Django initialization
 
 ## Monitoring
 
 ```bash
-docker compose logs -f
-docker compose logs -f web
-docker compose logs -f celery_worker
-docker compose logs -f celery_beat
-docker compose ps
-docker compose exec redis redis-cli ping
+docker compose -f compose.prod.yaml logs -f
+docker compose -f compose.prod.yaml logs -f web
+docker compose -f compose.prod.yaml logs -f celery_worker
+docker compose -f compose.prod.yaml logs -f celery_beat
+docker compose -f compose.prod.yaml ps
+docker compose -f compose.prod.yaml exec redis redis-cli ping
 ```
 
 ## Local Development
@@ -146,9 +145,8 @@ docker compose exec redis redis-cli ping
 Clone the repository:
 
 ```bash
-git clone https://github.com/dennisneo6969/esc-compose-prod.git
+git clone https://github.com/andreas-tuko/esc-compose-prod.git
 cd esc-compose-prod
-
 ```
 
 Create environment file:
@@ -165,28 +163,26 @@ docker compose -f compose.local.yaml up
 
 Access the application:
 
-* [http://localhost:8000](http://localhost:8000)
-* [http://localhost:8000/admin](http://localhost:8000/admin)
+- [http://localhost:8000](http://localhost:8000)
+- [http://localhost:8000/admin](http://localhost:8000/admin)
 
 ## Health Checks
 
-* Django readiness via `docker-health-check.py`
-* Redis ping checks
-* Celery worker inspection
-* Extended start period for migrations and static files
+- Django readiness via `docker-health-check.py`
+- Redis ping checks
+- Celery worker inspection
+- Extended start period for migrations and static files
 
 ## Security
 
-* Do not commit environment files
-* Rotate secrets regularly
-* Use strong passwords
-* Enable 2FA on external services
-* Keep Docker images updated
+- Do not commit environment files
+- Rotate secrets regularly
+- Use strong passwords
+- Enable 2FA on external services
+- Keep Docker images updated
 
 ## Backup Strategy
 
-* Automated database backups to Cloudflare R2
-* Media replication across R2 buckets
-* Retention configured in Django settings
-
-
+- Automated database backups to Cloudflare R2
+- Media replication across R2 buckets
+- Retention configured in Django settings
