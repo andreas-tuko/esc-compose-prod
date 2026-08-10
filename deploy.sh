@@ -239,6 +239,9 @@ gather_config() {
         read -p "Cloudflare Origin CA Key: " CLOUDFLARE_ORIGIN_CA_KEY
     fi
 
+    export CLOUDFLARE_API_TOKEN
+    export CLOUDFLARE_ORIGIN_CA_KEY
+
     if [ "$EXISTING_CONFIG" != true ]; then
         read -p "Create a dedicated 'deployer' user? (recommended) [Y/n]: " CREATE_USER
         CREATE_USER=${CREATE_USER:-Y}
@@ -423,6 +426,26 @@ link_env_file() {
 # Origin/Referer header against CSRF_TRUSTED_ORIGINS, which must match
 # what the browser sends — always https:// through Cloudflare.
 # ---------------------------------------------------------------------------
+sync_cloudflare_tokens_to_env() {
+    if [ -f "$APP_DIR/.env.docker" ]; then
+        if [ -n "$CLOUDFLARE_API_TOKEN" ]; then
+            if grep -q "^CLOUDFLARE_API_TOKEN=" "$APP_DIR/.env.docker"; then
+                sed -i "s|^CLOUDFLARE_API_TOKEN=.*|CLOUDFLARE_API_TOKEN=\"$CLOUDFLARE_API_TOKEN\"|" "$APP_DIR/.env.docker"
+            else
+                echo "" >> "$APP_DIR/.env.docker"
+                echo "CLOUDFLARE_API_TOKEN=\"$CLOUDFLARE_API_TOKEN\"" >> "$APP_DIR/.env.docker"
+            fi
+        fi
+        if [ -n "$CLOUDFLARE_ORIGIN_CA_KEY" ]; then
+            if grep -q "^CLOUDFLARE_ORIGIN_CA_KEY=" "$APP_DIR/.env.docker"; then
+                sed -i "s|^CLOUDFLARE_ORIGIN_CA_KEY=.*|CLOUDFLARE_ORIGIN_CA_KEY=\"$CLOUDFLARE_ORIGIN_CA_KEY\"|" "$APP_DIR/.env.docker"
+            else
+                echo "CLOUDFLARE_ORIGIN_CA_KEY=\"$CLOUDFLARE_ORIGIN_CA_KEY\"" >> "$APP_DIR/.env.docker"
+            fi
+        fi
+    fi
+}
+
 setup_env_file() {
     print_header "Environment Configuration"
 
@@ -431,7 +454,8 @@ setup_env_file() {
         read -p "Do you want to reconfigure it? [y/N]: " RECONFIG_ENV
         if [[ ! "$RECONFIG_ENV" =~ ^[Yy]$ ]]; then
             print_info "Keeping existing environment file"
-            print_success "Skipping environment configuration"
+            sync_cloudflare_tokens_to_env
+            print_success "Updated Cloudflare API credentials in environment file"
             return
         fi
         cp "$APP_DIR/.env.docker" "$APP_DIR/.env.docker.backup.$(date +%Y%m%d_%H%M%S)"
@@ -593,6 +617,7 @@ EOF
     read -r
 
     nano "$APP_DIR/.env.docker"
+    sync_cloudflare_tokens_to_env
     print_success "Environment file saved"
     validate_env_file
 }
