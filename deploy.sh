@@ -105,6 +105,14 @@ load_existing_config() {
     else
         EXISTING_CONFIG=false
     fi
+
+    # Check .env.docker for existing tokens if not present in .deployment_config
+    if [ -z "$CLOUDFLARE_API_TOKEN" ] && [ -f "${APP_DIR:-.}/.env.docker" ]; then
+        CLOUDFLARE_API_TOKEN=$(grep -E '^CLOUDFLARE_API_TOKEN=' "${APP_DIR:-.}/.env.docker" 2>/dev/null | head -n1 | cut -d'=' -f2- | sed -e 's/^"//' -e 's/"$//' -e "s/^'//" -e "s/'$//")
+    fi
+    if [ -z "$CLOUDFLARE_ORIGIN_CA_KEY" ] && [ -f "${APP_DIR:-.}/.env.docker" ]; then
+        CLOUDFLARE_ORIGIN_CA_KEY=$(grep -E '^CLOUDFLARE_ORIGIN_CA_KEY=' "${APP_DIR:-.}/.env.docker" 2>/dev/null | head -n1 | cut -d'=' -f2- | sed -e 's/^"//' -e 's/"$//' -e "s/^'//" -e "s/'$//")
+    fi
 }
 
 save_config() {
@@ -116,6 +124,8 @@ DOCKER_USERNAME="$DOCKER_USERNAME"
 APP_DIR="$APP_DIR"
 SECURITY_ENABLED="$SECURITY_ENABLED"
 ADMIN_EMAIL="$ADMIN_EMAIL"
+CLOUDFLARE_API_TOKEN="$CLOUDFLARE_API_TOKEN"
+CLOUDFLARE_ORIGIN_CA_KEY="$CLOUDFLARE_ORIGIN_CA_KEY"
 EOF
     chmod 600 "$CONFIG_FILE"
     print_success "Configuration saved for future deployments"
@@ -187,6 +197,18 @@ gather_config() {
                 read -sp "Docker Hub password/token: " DOCKER_PASSWORD
                 echo
             done
+
+            if [ -z "$CLOUDFLARE_API_TOKEN" ] && [ -z "$CLOUDFLARE_ORIGIN_CA_KEY" ]; then
+                print_info "Cloudflare API Token or Origin CA Key is required for Origin SSL generation"
+                read -p "Cloudflare API Token (press Enter to skip if using Origin CA Key): " CLOUDFLARE_API_TOKEN
+                if [ -z "$CLOUDFLARE_API_TOKEN" ]; then
+                    read -p "Cloudflare Origin CA Key: " CLOUDFLARE_ORIGIN_CA_KEY
+                fi
+            fi
+
+            export CLOUDFLARE_API_TOKEN
+            export CLOUDFLARE_ORIGIN_CA_KEY
+
             CREATE_USER="n"
             SETUP_FIREWALL="n"
             return 0
@@ -235,8 +257,13 @@ gather_config() {
         read -p "Cloudflare API Token (press Enter to skip if using Origin CA Key): " CLOUDFLARE_API_TOKEN
     fi
 
-    if [ -z "$CLOUDFLARE_API_TOKEN" ] && [ -z "$CLOUDFLARE_ORIGIN_CA_KEY" ]; then
-        read -p "Cloudflare Origin CA Key: " CLOUDFLARE_ORIGIN_CA_KEY
+    if [ -z "$CLOUDFLARE_API_TOKEN" ]; then
+        if [ -n "$CLOUDFLARE_ORIGIN_CA_KEY" ]; then
+            read -p "Cloudflare Origin CA Key [$CLOUDFLARE_ORIGIN_CA_KEY]: " NEW_CF_KEY
+            CLOUDFLARE_ORIGIN_CA_KEY=${NEW_CF_KEY:-$CLOUDFLARE_ORIGIN_CA_KEY}
+        else
+            read -p "Cloudflare Origin CA Key: " CLOUDFLARE_ORIGIN_CA_KEY
+        fi
     fi
 
     export CLOUDFLARE_API_TOKEN
