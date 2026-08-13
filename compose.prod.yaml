@@ -119,6 +119,7 @@ services:
       - "traefik.http.services.django.loadbalancer.healthcheck.path=/health/ready/"
       - "traefik.http.services.django.loadbalancer.healthcheck.interval=5s"
       - "traefik.http.services.django.loadbalancer.healthcheck.timeout=3s"
+      - "traefik.http.services.django.loadbalancer.healthcheck.hostname=localhost"
       - "traefik.http.middlewares.sec-headers.headers.customFrameOptionsValue=SAMEORIGIN"
       - "traefik.http.middlewares.sec-headers.headers.contentTypeNosniff=true"
       - "traefik.http.middlewares.sec-headers.headers.browserXssFilter=true"
