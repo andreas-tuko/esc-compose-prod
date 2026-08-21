@@ -106,7 +106,10 @@ load_existing_config() {
         EXISTING_CONFIG=false
     fi
 
-    # Check .env.docker for existing tokens if not present in .deployment_config
+    # Check .env.docker for existing tokens or domain if not present in .deployment_config
+    if [ -z "$DOMAIN_NAME" ] && [ -f "${APP_DIR:-.}/.env.docker" ]; then
+        DOMAIN_NAME=$(grep -E '^DOMAIN_NAME=' "${APP_DIR:-.}/.env.docker" 2>/dev/null | head -n1 | cut -d'=' -f2- | sed -e 's/^"//' -e 's/"$//' -e "s/^'//" -e "s/'$//")
+    fi
     if [ -z "$CLOUDFLARE_API_TOKEN" ] && [ -f "${APP_DIR:-.}/.env.docker" ]; then
         CLOUDFLARE_API_TOKEN=$(grep -E '^CLOUDFLARE_API_TOKEN=' "${APP_DIR:-.}/.env.docker" 2>/dev/null | head -n1 | cut -d'=' -f2- | sed -e 's/^"//' -e 's/"$//' -e "s/^'//" -e "s/'$//")
     fi
@@ -129,6 +132,8 @@ CLOUDFLARE_ORIGIN_CA_KEY="$CLOUDFLARE_ORIGIN_CA_KEY"
 EOF
     chmod 600 "$CONFIG_FILE"
     print_success "Configuration saved for future deployments"
+    sync_domain_name_to_env
+    sync_cloudflare_tokens_to_env
 }
 
 # ---------------------------------------------------------------------------
@@ -220,10 +225,11 @@ gather_config() {
         DOMAIN_NAME=${NEW_DOMAIN_NAME:-$DOMAIN_NAME}
     else
         read -p "Enter your domain name (e.g., example.com): " DOMAIN_NAME
-        while [ -z "$DOMAIN_NAME" ]; do
-            print_warning "Domain name cannot be empty"
-            read -p "Enter your domain name: " DOMAIN_NAME
-        done
+    fi
+
+    if [ -z "$DOMAIN_NAME" ]; then
+        print_error "Domain name is required and was not provided. Aborting."
+        exit 1
     fi
 
     print_info "Docker Hub credentials are required to pull the private image"
@@ -453,6 +459,24 @@ link_env_file() {
 # Origin/Referer header against CSRF_TRUSTED_ORIGINS, which must match
 # what the browser sends — always https:// through Cloudflare.
 # ---------------------------------------------------------------------------
+sync_domain_name_to_env() {
+    if [ -f "$APP_DIR/.env.docker" ] && [ -n "$DOMAIN_NAME" ]; then
+        local OLD_DOMAIN
+        OLD_DOMAIN=$(grep -E '^DOMAIN_NAME=' "$APP_DIR/.env.docker" 2>/dev/null | head -n1 | cut -d'=' -f2- | sed -e 's/^"//' -e 's/"$//' -e "s/^'//" -e "s/'$//")
+
+        if grep -q "^DOMAIN_NAME=" "$APP_DIR/.env.docker"; then
+            sed -i "s|^DOMAIN_NAME=.*|DOMAIN_NAME=\"$DOMAIN_NAME\"|" "$APP_DIR/.env.docker"
+        else
+            echo "" >> "$APP_DIR/.env.docker"
+            echo "DOMAIN_NAME=\"$DOMAIN_NAME\"" >> "$APP_DIR/.env.docker"
+        fi
+
+        if [ -n "$OLD_DOMAIN" ] && [ "$OLD_DOMAIN" != "$DOMAIN_NAME" ]; then
+            sed -i "s|$OLD_DOMAIN|$DOMAIN_NAME|g" "$APP_DIR/.env.docker"
+        fi
+    fi
+}
+
 sync_cloudflare_tokens_to_env() {
     if [ -f "$APP_DIR/.env.docker" ]; then
         if [ -n "$CLOUDFLARE_API_TOKEN" ]; then
@@ -481,8 +505,9 @@ setup_env_file() {
         read -p "Do you want to reconfigure it? [y/N]: " RECONFIG_ENV
         if [[ ! "$RECONFIG_ENV" =~ ^[Yy]$ ]]; then
             print_info "Keeping existing environment file"
+            sync_domain_name_to_env
             sync_cloudflare_tokens_to_env
-            print_success "Updated Cloudflare API credentials in environment file"
+            print_success "Updated Cloudflare API credentials and domain in environment file"
             return
         fi
         cp "$APP_DIR/.env.docker" "$APP_DIR/.env.docker.backup.$(date +%Y%m%d_%H%M%S)"
@@ -498,6 +523,7 @@ setup_env_file() {
 # ============================================
 # Django Core Settings
 # ============================================
+DOMAIN_NAME=$DOMAIN_NAME
 SECRET_KEY=$GENERATED_SECRET_KEY
 DEBUG=False
 ENVIRONMENT=production
@@ -644,6 +670,7 @@ EOF
     read -r
 
     nano "$APP_DIR/.env.docker"
+    sync_domain_name_to_env
     sync_cloudflare_tokens_to_env
     print_success "Environment file saved"
     validate_env_file
@@ -669,6 +696,11 @@ validate_env_file() {
     set +a
 
     # Critical checks
+    if [ -z "$DOMAIN_NAME" ]; then
+        errors+=("DOMAIN_NAME is not configured")
+        validation_failed=true
+    fi
+
     if [ -z "$SECRET_KEY" ] || [ "$SECRET_KEY" = "your-secret-key-here" ]; then
         errors+=("SECRET_KEY is not configured")
         validation_failed=true
@@ -975,8 +1007,11 @@ get_env_val() {
 CLOUDFLARE_API_TOKEN="${CLOUDFLARE_API_TOKEN:-$(get_env_val "CLOUDFLARE_API_TOKEN")}"
 CLOUDFLARE_ORIGIN_CA_KEY="${CLOUDFLARE_ORIGIN_CA_KEY:-$(get_env_val "CLOUDFLARE_ORIGIN_CA_KEY")}"
 DOMAIN_NAME="${DOMAIN_NAME:-$(get_env_val "DOMAIN_NAME")}"
-
-DOMAIN="${DOMAIN_NAME:-bamburiescorts.com}"
+if [ -z "$DOMAIN_NAME" ]; then
+    print_error "DOMAIN_NAME is not set in environment, .deployment_config, or .env.docker."
+    exit 1
+fi
+DOMAIN="$DOMAIN_NAME"
 VALIDITY_DAYS=5475 # 15 years
 
 check_dependencies() {

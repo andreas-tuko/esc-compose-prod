@@ -112,7 +112,7 @@ services:
     labels:
       - "com.centurylinklabs.watchtower.enable=true"
       - "traefik.enable=true"
-      - "traefik.http.routers.django.rule=Host(`bamburiescorts.com`) || Host(`www.bamburiescorts.com`)"
+      - "traefik.http.routers.django.rule=Host(`${DOMAIN_NAME:?DOMAIN_NAME is required}`) || Host(`www.${DOMAIN_NAME:?DOMAIN_NAME is required}`)"
       - "traefik.http.routers.django.entrypoints=websecure"
       - "traefik.http.routers.django.tls=true"
       - "traefik.http.services.django.loadbalancer.server.port=8000"
