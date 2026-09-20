@@ -54,17 +54,23 @@ EMAIL_HOST_USER=your-email@gmail.com
 EMAIL_HOST_PASSWORD=your-app-password
 EMAIL_PORT=587
 
-CLOUDFLARE_R2_ACCESS_KEY=your-access-key
-CLOUDFLARE_R2_SECRET_KEY=your-secret-key
-CLOUDFLARE_R2_BUCKET=your-bucket-name
-CLOUDFLARE_R2_BUCKET_ENDPOINT=https://your-account-id.r2.cloudflarestorage.com
+CLOUDFLARE_R2_PRIVATE_ACCESS_KEY=your-private-access-key
+CLOUDFLARE_R2_PRIVATE_SECRET_KEY=your-private-secret-key
+CLOUDFLARE_R2_PRIVATE_BUCKET=your-protected-bucket-name
+CLOUDFLARE_R2_PRIVATE_BUCKET_ENDPOINT=https://your-account-id.r2.cloudflarestorage.com
 CLOUDFLARE_R2_TOKEN_VALUE=your-token
 
-CLOUDFLARE_R2_PUBLIC_ACCESS_KEY=your-public-access-key
-CLOUDFLARE_R2_PUBLIC_SECRET_KEY=your-public-secret-key
-CLOUDFLARE_R2_PUBLIC_BUCKET=your-public-bucket
-CLOUDFLARE_R2_PUBLIC_BUCKET_ENDPOINT=https://your-account-id.r2.cloudflarestorage.com
-CLOUDFLARE_R2_PUBLIC_CUSTOM_DOMAIN=https://cdn.yourdomain.com
+CLOUDFLARE_R2_PUBLIC_STATIC_ACCESS_KEY=your-static-access-key
+CLOUDFLARE_R2_PUBLIC_STATIC_SECRET_KEY=your-static-secret-key
+CLOUDFLARE_R2_PUBLIC_STATIC_BUCKET=your-static-bucket-name
+CLOUDFLARE_R2_PUBLIC_STATIC_BUCKET_ENDPOINT=https://your-account-id.r2.cloudflarestorage.com
+CLOUDFLARE_R2_PUBLIC_STATIC_CUSTOM_DOMAIN=static.yourdomain.com
+
+CLOUDFLARE_R2_PUBLIC_MEDIA_ACCESS_KEY=your-media-access-key
+CLOUDFLARE_R2_PUBLIC_MEDIA_SECRET_KEY=your-media-secret-key
+CLOUDFLARE_R2_PUBLIC_MEDIA_BUCKET=your-media-bucket-name
+CLOUDFLARE_R2_PUBLIC_MEDIA_BUCKET_ENDPOINT=https://your-account-id.r2.cloudflarestorage.com
+CLOUDFLARE_R2_PUBLIC_MEDIA_CUSTOM_DOMAIN=media.yourdomain.com
 
 BACKUP_R2_ACCESS_KEY_ID=your-backup-access-key
 BACKUP_R2_SECRET_ACCESS_KEY=your-backup-secret-key

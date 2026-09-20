@@ -5,6 +5,7 @@ This guide explains the interactive configuration process during deployment.
 ## Overview
 
 The deployment script includes an **interactive configuration editor** that:
+
 1. ✅ Auto-generates secure SECRET_KEY
 2. ✅ Pre-fills your domain in all relevant fields
 3. ✅ Provides sensible defaults
@@ -13,7 +14,7 @@ The deployment script includes an **interactive configuration editor** that:
 
 ## Configuration Flow
 
-```
+```text
 Installation Steps
     ↓
 Environment File Created (with defaults)
@@ -34,7 +35,7 @@ Validation Runs Automatically
 
 ### 1. Pre-Installation Notice
 
-```
+```text
 ============================================
 IMPORTANT: Environment Configuration Required
 ============================================
@@ -66,6 +67,7 @@ Press Enter to open the editor and configure your environment...
 ### 2. Nano Editor Opens
 
 You'll see your environment file with:
+
 - Auto-generated SECRET_KEY ✓
 - Your domain already configured ✓
 - Clear sections with comments
@@ -74,6 +76,7 @@ You'll see your environment file with:
 ### 3. Configuration Sections
 
 #### Already Configured ✓
+
 ```bash
 # These are already set correctly:
 SECRET_KEY=xh9f8hg4h8g4hg84hg84h...  # Auto-generated
@@ -82,6 +85,7 @@ SITE_URL=https://example.com  # Your domain
 ```
 
 #### Must Configure ⚠
+
 ```bash
 # Required for email functionality:
 EMAIL_HOST_USER=your-email@gmail.com  # ← Change this
@@ -92,10 +96,14 @@ DATABASE_URL=postgresql://user:password@host:port/dbname  # ← Configure if nee
 ```
 
 #### Optional (Configure if Using) ○
+
 ```bash
-# Cloudflare R2 (for file storage)
-CLOUDFLARE_R2_ACCESS_KEY=your-access-key
-CLOUDFLARE_R2_SECRET_KEY=your-secret-key
+# Cloudflare R2 (for file storage: protected uploads, public static, and public media)
+CLOUDFLARE_R2_PRIVATE_ACCESS_KEY=your-access-key
+CLOUDFLARE_R2_PRIVATE_SECRET_KEY=your-secret-key
+CLOUDFLARE_R2_PRIVATE_BUCKET=your-protected-bucket
+CLOUDFLARE_R2_PUBLIC_MEDIA_BUCKET=your-media-bucket
+CLOUDFLARE_R2_PUBLIC_STATIC_BUCKET=your-static-bucket
 
 # M-Pesa (for payments)
 MPESA_CONSUMER_KEY=your-consumer-key
@@ -110,7 +118,8 @@ GOOGLE_OAUTH_CLIENT_ID=your-client-id
 The script automatically validates your configuration:
 
 #### If Everything is Correct ✓
-```
+
+```text
 ============================================
 Validating Environment Configuration
 ============================================
@@ -121,7 +130,8 @@ Ready to start the application!
 ```
 
 #### If Required Fields Missing ✗
-```
+
+```text
 ============================================
 Validating Environment Configuration
 ============================================
@@ -138,7 +148,8 @@ Do you want to edit the configuration again? [Y/n]:
 ```
 
 #### If Optional Fields Not Configured ⚠
-```
+
+```text
 ============================================
 Validating Environment Configuration
 ============================================
@@ -159,6 +170,7 @@ Continue anyway? [Y/n]:
 **Goal**: Get app running with email functionality
 
 **Configure**:
+
 ```bash
 # Email settings
 EMAIL_HOST_USER=myapp@gmail.com
@@ -176,6 +188,7 @@ EMAIL_HOST_PASSWORD=abcd efgh ijkl mnop  # Gmail app password
 **Goal**: All features enabled
 
 **Configure**:
+
 ```bash
 # Email
 EMAIL_HOST_USER=myapp@gmail.com
@@ -185,9 +198,11 @@ EMAIL_HOST_PASSWORD=your-app-password
 DATABASE_URL=postgresql://dbuser:securepass@db.example.com:5432/mydb
 
 # Cloudflare R2
-CLOUDFLARE_R2_ACCESS_KEY=abc123...
-CLOUDFLARE_R2_SECRET_KEY=xyz789...
-CLOUDFLARE_R2_BUCKET=myapp-private
+CLOUDFLARE_R2_PRIVATE_ACCESS_KEY=abc123...
+CLOUDFLARE_R2_PRIVATE_SECRET_KEY=xyz789...
+CLOUDFLARE_R2_PRIVATE_BUCKET=myapp-protected
+CLOUDFLARE_R2_PUBLIC_MEDIA_BUCKET=myapp-media
+CLOUDFLARE_R2_PUBLIC_STATIC_BUCKET=myapp-static
 
 # M-Pesa
 MPESA_CONSUMER_KEY=xyz123...
@@ -217,6 +232,7 @@ RECAPTCHA_PRIVATE_KEY=your-secret-key
 **Goal**: Test environment without external services
 
 **Configure**:
+
 ```bash
 # Email (use Mailtrap or similar)
 EMAIL_HOST=smtp.mailtrap.io
@@ -239,6 +255,7 @@ BASE_URL=https://sandbox.safaricom.co.ke
 ## Editing Tips
 
 ### Navigation in Nano
+
 - **Arrow Keys**: Move cursor
 - **Page Up/Down**: Scroll
 - **Ctrl+K**: Cut line
@@ -247,12 +264,14 @@ BASE_URL=https://sandbox.safaricom.co.ke
 - **Ctrl+X**: Exit (will prompt to save)
 
 ### Saving Changes
+
 1. Press `Ctrl+X`
 2. Nano asks: "Save modified buffer?"
 3. Press `Y` for Yes
 4. Press `Enter` to confirm filename
 
 ### Common Mistakes to Avoid
+
 ❌ Leaving quotes around values: `EMAIL_HOST_USER="myemail@gmail.com"`
 ✓ No quotes needed: `EMAIL_HOST_USER=myemail@gmail.com`
 
@@ -267,15 +286,16 @@ BASE_URL=https://sandbox.safaricom.co.ke
 ### Gmail Setup
 
 1. **Enable 2-Factor Authentication**
-   - Go to: https://myaccount.google.com/security
+   - Go to: <https://myaccount.google.com/security>
    - Enable 2-Step Verification
 
 2. **Generate App Password**
-   - Go to: https://myaccount.google.com/apppasswords
+   - Go to: <https://myaccount.google.com/apppasswords>
    - Select "Mail" and your device
    - Copy the 16-character password (format: xxxx xxxx xxxx xxxx)
 
 3. **Configure**:
+
    ```bash
    EMAIL_HOST=smtp.gmail.com
    EMAIL_HOST_USER=yourname@gmail.com
@@ -300,17 +320,26 @@ BASE_URL=https://sandbox.safaricom.co.ke
    - Format: `abc123def456...`
 
 4. **Configure**:
+
    ```bash
-   CLOUDFLARE_R2_ACCESS_KEY=your-access-key-id
-   CLOUDFLARE_R2_SECRET_KEY=your-secret-access-key
-   CLOUDFLARE_R2_BUCKET=myapp-private
-   CLOUDFLARE_R2_BUCKET_ENDPOINT=https://abc123def456.r2.cloudflarestorage.com
+   CLOUDFLARE_R2_PRIVATE_ACCESS_KEY=your-access-key-id
+   CLOUDFLARE_R2_PRIVATE_SECRET_KEY=your-secret-access-key
+   CLOUDFLARE_R2_PRIVATE_BUCKET=myapp-protected
+   CLOUDFLARE_R2_PRIVATE_BUCKET_ENDPOINT=https://abc123def456.r2.cloudflarestorage.com
+
+   CLOUDFLARE_R2_PUBLIC_MEDIA_BUCKET=myapp-media
+   CLOUDFLARE_R2_PUBLIC_MEDIA_BUCKET_ENDPOINT=https://abc123def456.r2.cloudflarestorage.com
+   CLOUDFLARE_R2_PUBLIC_MEDIA_CUSTOM_DOMAIN=media.yourdomain.com
+
+   CLOUDFLARE_R2_PUBLIC_STATIC_BUCKET=myapp-static
+   CLOUDFLARE_R2_PUBLIC_STATIC_BUCKET_ENDPOINT=https://abc123def456.r2.cloudflarestorage.com
+   CLOUDFLARE_R2_PUBLIC_STATIC_CUSTOM_DOMAIN=static.yourdomain.com
    ```
 
 ### M-Pesa Setup (Kenya)
 
 1. **Register on Daraja**
-   - Go to: https://developer.safaricom.co.ke/
+   - Go to: <https://developer.safaricom.co.ke/>
    - Create account and register app
 
 2. **Get Sandbox Credentials** (for testing)
@@ -319,6 +348,7 @@ BASE_URL=https://sandbox.safaricom.co.ke
    - Passkey (from test credentials)
 
 3. **Configure**:
+
    ```bash
    # For testing (sandbox)
    MPESA_CONSUMER_KEY=your-sandbox-consumer-key
@@ -337,6 +367,7 @@ BASE_URL=https://sandbox.safaricom.co.ke
 ### PostgreSQL Database Setup
 
 1. **Create Database**
+
    ```sql
    CREATE DATABASE myapp_db;
    CREATE USER myapp_user WITH PASSWORD 'secure_password';
@@ -351,6 +382,7 @@ BASE_URL=https://sandbox.safaricom.co.ke
    - Password: secure_password
 
 3. **Configure**:
+
    ```bash
    DATABASE_URL=postgresql://myapp_user:secure_password@db.example.com:5432/myapp_db
    ```
@@ -365,6 +397,7 @@ cd /opt/apps/esc
 ```
 
 This will:
+
 1. Open nano editor with your current configuration
 2. Let you make changes
 3. Offer to restart the application
@@ -375,11 +408,13 @@ This will:
 The script checks:
 
 ### Critical (Must Pass)
+
 - ✅ SECRET_KEY is set and not default
 - ✅ ALLOWED_HOSTS doesn't contain placeholder
 - ✅ Basic syntax is correct
 
 ### Warnings (Can Continue)
+
 - ⚠ Email not configured
 - ⚠ Database uses placeholder values
 - ⚠ External services not configured
@@ -391,6 +426,7 @@ The script checks:
 **Problem**: Configuration has critical errors
 
 **Solution**:
+
 1. Review error messages
 2. Edit configuration again when prompted
 3. Fix the specific issues mentioned
@@ -401,6 +437,7 @@ The script checks:
 **Problem**: Application runs but specific features don't work
 
 **Solution**:
+
 1. Check application logs: `./logs.sh web`
 2. Verify credentials for that service
 3. Reconfigure: `./reconfig.sh`
@@ -409,6 +446,7 @@ The script checks:
 ### Can't Remember What to Configure
 
 **Solution**:
+
 1. Check `.env.example` in the repo for reference
 2. Read comments in your `.env.docker` file
 3. Consult this guide for service-specific instructions
@@ -434,6 +472,7 @@ The script checks:
    - Different email accounts if possible
 
 5. **Backup your configuration**
+
    ```bash
    cp /opt/apps/esc/.env.docker ~/env-backup-$(date +%Y%m%d).txt
    ```
@@ -441,6 +480,7 @@ The script checks:
 ## Summary
 
 The interactive configuration system:
+
 - ✅ Makes deployment easy and guided
 - ✅ Validates configuration before starting
 - ✅ Prevents common mistakes
