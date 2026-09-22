@@ -76,7 +76,19 @@ services:
         reservations:
           cpus: "0.05"
           memory: 128M
-          
+
+  migrator:
+    image: andreastuko/esc:latest
+    command: >
+      bash -c "python manage.py migrate && python manage.py migrate --database=analytics"
+    env_file:
+      - .env.docker
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+
+
   web:
     image: andreastuko/esc:latest
     restart: unless-stopped
@@ -87,9 +99,8 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
-        # No dependency on seeder — web and seeder race independently.
-        # Migrations run in build.sh (web startup), seeder runs reference data.
-        # Both are idempotent so the order doesn't matter.
+      migrator:
+        condition: service_completed_successfully
     command: ["./build.sh"]
     expose:
       - "8000"
