@@ -123,9 +123,21 @@ services:
     labels:
       - "com.centurylinklabs.watchtower.enable=true"
       - "traefik.enable=true"
-      - "traefik.http.routers.django.rule=Host(`${DOMAIN_NAME:?DOMAIN_NAME is required}`) || Host(`www.${DOMAIN_NAME:?DOMAIN_NAME is required}`)"
+      # ── High-Priority Backend Router (priority 100): APIs, Admin, Media, Static, Sitemaps ──
+      - "traefik.http.routers.django.rule=(Host(`${DOMAIN_NAME:?DOMAIN_NAME is required}`) || Host(`www.${DOMAIN_NAME:?DOMAIN_NAME is required}`)) && (PathPrefix(`/api`) || PathPrefix(`/e/api`) || PathPrefix(`/posts/api`) || PathPrefix(`/pages/api`) || PathPrefix(`/account/api`) || PathPrefix(`/_allauth`) || PathPrefix(`/daddy`) || PathPrefix(`/admin`) || PathRegexp(`admin-dashboard`) || PathRegexp(`sitemap.*\\.xml$$`) || Path(`/robots.txt`) || Path(`/e/robots.txt`) || PathPrefix(`/static`) || PathPrefix(`/media`) || PathPrefix(`/health`) || PathPrefix(`/silk`) || PathPrefix(`/tinymce`) || PathPrefix(`/billing`) || PathPrefix(`/analytics`) || PathPrefix(`/files`) || PathPrefix(`/e/verification`) || PathPrefix(`/account/google`) || PathPrefix(`/account/gallery`) || PathPrefix(`/account/videos`) || PathPrefix(`/account/escort-registration`) || PathPrefix(`/account/escort-reviews`))"
+      - "traefik.http.routers.django.priority=100"
       - "traefik.http.routers.django.entrypoints=websecure"
       - "traefik.http.routers.django.tls=true"
+      - "traefik.http.routers.django.service=django"
+      - "traefik.http.routers.django.middlewares=sec-headers,rate-limit,health-redir"
+      # ── Fallback Router (priority 10): Catch-all for rollback to old Django templates ──
+      - "traefik.http.routers.django-fallback.rule=Host(`${DOMAIN_NAME:?DOMAIN_NAME is required}`) || Host(`www.${DOMAIN_NAME:?DOMAIN_NAME is required}`)"
+      - "traefik.http.routers.django-fallback.priority=10"
+      - "traefik.http.routers.django-fallback.entrypoints=websecure"
+      - "traefik.http.routers.django-fallback.tls=true"
+      - "traefik.http.routers.django-fallback.service=django"
+      - "traefik.http.routers.django-fallback.middlewares=sec-headers,rate-limit,health-redir"
+      # ── Service & LoadBalancer Settings ──
       - "traefik.http.services.django.loadbalancer.server.port=8000"
       - "traefik.http.services.django.loadbalancer.healthcheck.path=/health/ready/"
       - "traefik.http.services.django.loadbalancer.healthcheck.interval=5s"
@@ -142,7 +154,6 @@ services:
       - "traefik.http.middlewares.rate-limit.ratelimit.period=1m"
       - "traefik.http.middlewares.health-redir.redirectregex.regex=^http://([^/]+)/health$$"
       - "traefik.http.middlewares.health-redir.redirectregex.replacement=http://$${1}/health/"
-      - "traefik.http.routers.django.middlewares=sec-headers,rate-limit,health-redir"
     deploy:
       replicas: 2
       resources:
@@ -152,6 +163,52 @@ services:
         reservations:
           cpus: "0.15"
           memory: 192M
+
+  frontend:
+    image: andreastuko/esc-frontend:latest
+    restart: unless-stopped
+    env_file:
+      - .env.docker
+    environment:
+      - NODE_ENV=production
+      - PORT=3000
+      - HOST=0.0.0.0
+      - ORIGIN=https://${DOMAIN_NAME:?DOMAIN_NAME is required}
+      - PUBLIC_API_BASE_URL=https://${DOMAIN_NAME:?DOMAIN_NAME is required}
+      - INTERNAL_API_URL=http://web:8000
+    expose:
+      - "3000"
+    depends_on:
+      web:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget --no-verbose --tries=1 --spider http://127.0.0.1:3000/ || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+      start_interval: 2s
+    security_opt:
+      - no-new-privileges:true
+    deploy:
+      resources:
+        limits:
+          cpus: "0.8"
+          memory: 512M
+        reservations:
+          cpus: "0.1"
+          memory: 128M
+    labels:
+      - "com.centurylinklabs.watchtower.enable=true"
+      - "traefik.enable=true"
+      # ── SvelteKit Frontend Router (priority 50): Takes precedence over django-fallback while active ──
+      - "traefik.http.routers.frontend.rule=Host(`${DOMAIN_NAME:?DOMAIN_NAME is required}`) || Host(`www.${DOMAIN_NAME:?DOMAIN_NAME is required}`)"
+      - "traefik.http.routers.frontend.priority=50"
+      - "traefik.http.routers.frontend.entrypoints=websecure"
+      - "traefik.http.routers.frontend.tls=true"
+      - "traefik.http.routers.frontend.service=frontend"
+      - "traefik.http.routers.frontend.middlewares=sec-headers"
+      - "traefik.http.services.frontend.loadbalancer.server.port=3000"
 
   traefik:
     image: traefik:v3.6.12
@@ -192,6 +249,8 @@ services:
       - no-new-privileges:true
     depends_on:
       web:
+        condition: service_healthy
+      frontend:
         condition: service_healthy
     deploy:
       resources:
