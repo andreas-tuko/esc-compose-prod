@@ -38,7 +38,7 @@ This deployment setup provides a **production-ready environment** for the ESC Dj
 
 ## Architecture
 
-```
+```text
 Internet
     ↓
 Cloudflare (SSL, CDN, DDoS Protection, WAF)
@@ -210,19 +210,24 @@ The installation script automatically:
    - Automatic IP banning
    - Custom logging and reporting
 10. ✅ **Installs and configures secure Nginx**
-   - Cloudflare-only IP enforcement
-   - Catch-all server blocks non-Cloudflare traffic
-   - Multi-layer rate limiting
-   - Security headers
-11. ✅ Sets up systemd service for auto-start
-12. ✅ Configures firewall (if selected)
-13. ✅ **Creates security management scripts** (NEW)
-   - Security dashboard
-   - Manual unban tool
-   - Monitoring utilities
-14. ✅ Pulls Docker images and starts services
+
+- Cloudflare-only IP enforcement
+- Catch-all server blocks non-Cloudflare traffic
+- Multi-layer rate limiting
+- Security headers
+
+ 1. ✅ Sets up systemd service for auto-start
+ 2. ✅ Configures firewall (if selected)
+ 3. ✅ **Creates security management scripts** (NEW)
+
+- Security dashboard
+- Manual unban tool
+- Monitoring utilities
+
+ 1. ✅ Pulls Docker images and starts services
 
 **Key Feature**: The script includes an interactive configuration editor that:
+
 - Auto-generates secure SECRET_KEY
 - Pre-fills your domain
 - Guides you through required vs optional settings
@@ -234,6 +239,7 @@ The installation script automatically:
 The script will automatically open a nano editor with your environment configuration.
 
 **What's Already Configured:**
+
 - ✅ SECRET_KEY (auto-generated, secure)
 - ✅ ALLOWED_HOSTS (your domain)
 - ✅ SITE_URL (your domain)
@@ -242,6 +248,7 @@ The script will automatically open a nano editor with your environment configura
 **What You Need to Configure:**
 
 **Required for core functionality:**
+
 ```bash
 # Email settings (for sending emails)
 EMAIL_HOST_USER=your-email@gmail.com
@@ -252,10 +259,14 @@ DATABASE_URL=postgresql://user:password@host:5432/dbname
 ```
 
 **Optional (configure if using these features):**
+
 ```bash
-# Cloudflare R2 (for file storage)
-CLOUDFLARE_R2_ACCESS_KEY=your-key
-CLOUDFLARE_R2_SECRET_KEY=your-secret
+# Cloudflare R2 (for file storage: private uploads, public media, public static)
+CLOUDFLARE_R2_PRIVATE_ACCESS_KEY=your-key
+CLOUDFLARE_R2_PRIVATE_SECRET_KEY=your-secret
+CLOUDFLARE_R2_PRIVATE_BUCKET=your-protected-bucket
+CLOUDFLARE_R2_PUBLIC_MEDIA_BUCKET=your-media-bucket
+CLOUDFLARE_R2_PUBLIC_STATIC_BUCKET=your-static-bucket
 
 # M-Pesa (for payments in Kenya)
 MPESA_CONSUMER_KEY=your-key
@@ -273,6 +284,7 @@ POSTHOG_API_KEY=your-key
 **For detailed configuration guide, see [CONFIGURATION.md](docs/CONFIGURATION.md)**
 
 **In the nano editor:**
+
 1. Use arrow keys to navigate
 2. Replace `your-*` placeholders with actual values
 3. Leave optional fields blank if not using
@@ -305,7 +317,7 @@ cd /opt/apps/esc
 This deployment includes **enterprise-grade security hardening** that protects against:
 
 | Threat | Detection | Response | Duration |
-|--------|-----------|----------|----------|
+| -------- | ----------- | ---------- | ---------- |
 | Direct IP Access | Immediate | 403 Forbidden | 30 days (permanent) |
 | SQL Injection | Pattern Match | Ban + Log | 30 days (permanent) |
 | XSS Attacks | 3 occurrences | Ban + Log | 14 days |
@@ -321,17 +333,20 @@ This deployment includes **enterprise-grade security hardening** that protects a
 **Enabled automatically during deployment:**
 
 ✅ **Cloudflare-only IP Enforcement**
+
 - Only Cloudflare IPs can access your application
 - Non-Cloudflare IPs get 403 Forbidden
 - Prevents direct IP bypassing of Cloudflare protection
 
 ✅ **Multi-layer Rate Limiting**
+
 - General endpoints: 10 requests/second
 - API endpoints: 30 requests/minute
 - Login endpoints: 5 requests/minute
 - Violators get 429 Too Many Requests + ban
 
 ✅ **Fail2Ban Threat Detection** (10 Jails)
+
 - SSH brute force protection
 - Vulnerability scanner detection
 - SQL injection blocking
@@ -342,12 +357,14 @@ This deployment includes **enterprise-grade security hardening** that protects a
 - File inclusion attack blocking
 
 ✅ **Automatic IP Banning**
+
 - Offending IPs automatically blocked
 - Ban times: 1 hour to 30 days depending on threat
 - Permanent bans for critical threats (SQL injection, RFI/LFI)
 - All bans logged in `/var/log/fail2ban-custom.log`
 
 ✅ **Real-time Security Monitoring**
+
 - Dashboard showing active threats
 - Recently banned IPs list
 - Top offending IPs
@@ -444,6 +461,7 @@ cd /opt/apps/esc
 Nginx configuration is located at `/etc/nginx/sites-available/esc`
 
 The configuration includes:
+
 - Cloudflare IP geo-blocking
 - Multi-zone rate limiting
 - Security headers
@@ -610,6 +628,7 @@ cd /opt/apps/esc
 ```
 
 Use this whenever you:
+
 - Update your Docker image
 - Need to restart the application
 - Deploy a new version
@@ -624,6 +643,7 @@ cd /opt/apps/esc
 ```
 
 Use this when you need to:
+
 - Change environment variables
 - Update API keys or credentials
 - Modify service configurations
@@ -657,6 +677,7 @@ cd /opt/apps/esc
 ```
 
 Shows:
+
 - Per-jail banned IP counts
 - Recently banned IPs
 - Top offending IPs
@@ -719,22 +740,26 @@ docker compose -f compose.prod.yaml exec web python manage.py collectstatic
 ### Application Won't Start
 
 1. **Check Docker service**:
+
    ```bash
    sudo systemctl status docker
    ```
 
 2. **Check logs**:
+
    ```bash
    cd /opt/apps/esc
    ./logs.sh
    ```
 
 3. **Check environment variables**:
+
    ```bash
    cat /opt/apps/esc/.env.docker
    ```
 
 4. **Verify Docker Hub login**:
+
    ```bash
    docker login
    ```
@@ -744,21 +769,25 @@ docker compose -f compose.prod.yaml exec web python manage.py collectstatic
 This usually means the Django app isn't running:
 
 1. **Check if containers are running**:
+
    ```bash
    docker ps
    ```
 
 2. **Check web service health**:
+
    ```bash
    docker compose -f compose.prod.yaml ps
    ```
 
 3. **Check web logs**:
+
    ```bash
    ./logs.sh web
    ```
 
 4. **Restart the application**:
+
    ```bash
    ./deploy.sh
    ```
@@ -766,21 +795,25 @@ This usually means the Django app isn't running:
 ### Can't Access Website
 
 1. **Check DNS propagation**:
+
    ```bash
    nslookup your-domain.com
    ```
 
 2. **Check firewall**:
+
    ```bash
    sudo ufw status
    ```
 
 3. **Check Nginx status**:
+
    ```bash
    sudo systemctl status nginx
    ```
 
 4. **Check Nginx logs**:
+
    ```bash
    sudo tail -f /var/log/nginx/esc_error.log
    ```
@@ -794,16 +827,19 @@ This usually means the Django app isn't running:
 If legitimate users are getting banned:
 
 1. **Check which jail banned them**:
+
    ```bash
    grep "BANNED.*<IP>" /var/log/fail2ban-custom.log
    ```
 
 2. **Unban the IP**:
+
    ```bash
    /opt/bin/f2b-unban.sh <IP>
    ```
 
 3. **Whitelist the IP (optional)**:
+
    ```bash
    sudo nano /etc/fail2ban/jail.local
    # Add to [DEFAULT] section:
@@ -820,11 +856,13 @@ If legitimate users are getting banned:
 If your server is experiencing an attack:
 
 1. **Check security dashboard**:
+
    ```bash
    /opt/bin/f2b-dashboard.sh
    ```
 
 2. **View real-time bans**:
+
    ```bash
    tail -f /var/log/fail2ban-custom.log
    ```
@@ -835,6 +873,7 @@ If your server is experiencing an attack:
    - Add rules to block attack patterns
 
 4. **Increase ban times temporarily**:
+
    ```bash
    sudo nano /etc/fail2ban/jail.local
    # Change: bantime = 86400  (to 604800 for 7 days)
@@ -846,16 +885,19 @@ See [SECURITY.md](docs/SECURITY.md) for emergency procedures.
 ### Celery Workers Not Processing Tasks
 
 1. **Check worker status**:
+
    ```bash
    ./logs.sh celery_worker
    ```
 
 2. **Check Redis connection**:
+
    ```bash
    docker compose -f compose.prod.yaml exec redis redis-cli ping
    ```
 
 3. **Restart workers**:
+
    ```bash
    docker compose -f compose.prod.yaml restart celery_worker celery_beat
    ```
@@ -863,11 +905,13 @@ See [SECURITY.md](docs/SECURITY.md) for emergency procedures.
 ### Out of Disk Space
 
 1. **Check disk usage**:
+
    ```bash
    df -h
    ```
 
 2. **Clean up Docker resources**:
+
    ```bash
    # Remove unused containers, networks, images
    docker system prune -a
@@ -877,6 +921,7 @@ See [SECURITY.md](docs/SECURITY.md) for emergency procedures.
    ```
 
 3. **Check log sizes**:
+
    ```bash
    du -sh /var/log/nginx/
    du -sh /opt/apps/esc/logs/
@@ -887,11 +932,13 @@ See [SECURITY.md](docs/SECURITY.md) for emergency procedures.
 If you get permission errors:
 
 1. **Fix ownership**:
+
    ```bash
    sudo chown -R $USER:$USER /opt/apps/esc
    ```
 
 2. **Add user to Docker group**:
+
    ```bash
    sudo usermod -aG docker $USER
    newgrp docker
@@ -960,7 +1007,7 @@ tail -f /var/log/fail2ban-custom.log
 4. **Django** - CSRF protection, SQL escaping, secure defaults
 5. **Application** - Business logic security
 
-### Automatic Security Features
+### Built-in Security Features
 
 ✅ Cloudflare-only IP enforcement  
 ✅ Multi-layer rate limiting  
@@ -1078,6 +1125,7 @@ cd /opt/apps/esc
 ```
 
 **Smart Re-deployment**:
+
 - Preserves your domain, SSL, and configuration
 - Preserves all security settings (Fail2Ban, rate limiting)
 - Skips already-configured components
@@ -1218,4 +1266,4 @@ This deployment configuration is provided as-is for the ESC Django application.
 
 **Maintainer**: Andreas Tuko
 
-**Repository**: https://github.com/andreas-tuko/esc-compose-prod
+**Repository**: <https://github.com/andreas-tuko/esc-compose-prod>
