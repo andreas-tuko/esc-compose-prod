@@ -1,201 +1,251 @@
-# ESC Application
+# ESC Platform: Production Deployment & Orchestration
 
-A Django-based web application with Celery workers, Redis for caching and queuing.
+> **Stack**: Docker Compose v2 | **Edge Proxy**: Traefik v3.6.12 | **Frontend**: SvelteKit 5 | **Backend**: Django 5.2.17 / Daphne | **Database**: PostgreSQL 17 | **Cache**: Redis 8
 
-## Architecture
+Production deployment repository for the **ESC Platform**, providing containerized multi-service orchestration, zero-downtime deployments, dual-router fallback routing, automated database backups, and edge TLS security.
 
-- **Web**: Django application serving the main  website
-- **Celery Worker**: Asynchronous task processing
-- **Celery Beat**: Scheduled task execution
-- **Redis**: Cache and message broker
-- **PostgreSQL**: Primary database (internal), Analytics database (external)
-- **Cloudflare R2**: Storage for static files and media
-- **Traefik**: Reverse proxy with automatic Let's Encrypt SSL/TLS certificates
+---
 
-## Prerequisites
+## 📋 Table of Contents
 
-- Docker and Docker Compose
-- PostgreSQL database
-- Cloudflare R2 account
-- M-Pesa API credentials
-- Sentry account (optional)
-- PostHog account (optional)
+- [System Architecture](#-system-architecture)
+- [Traefik Routing & Dual-Router Rollback](#-traefik-routing--dual-router-rollback)
+- [Service Stack Inventory](#-service-stack-inventory)
+- [Storage & Backup Strategy](#-storage--backup-strategy)
+- [SSL/TLS Management](#-ssltls-management)
+- [Quick Deployment](#-quick-deployment)
+- [Environment Configuration](#-environment-configuration)
+- [Operations & Monitoring](#-operations--monitoring)
+- [Security Hardening](#-security-hardening)
 
-## Environment Configuration
+---
 
-Create a `.env.docker` file in the project root:
+## 🏗 System Architecture
+
+```text
+                                Internet
+                                   │
+                                   ▼
+             Cloudflare Edge (WAF, CDN, DDoS Protection, Origin SSL)
+                                   │
+                                   ▼
+              Traefik v3.6.12 Reverse Proxy (Ports 80 / 443)
+              - Automatic TLS & Cloudflare Origin CA Certs
+              - Trusted Cloudflare Real-IP Restoration
+              - Security Headers & Dynamic Rate Limiting
+                                   │
+         ┌─────────────────────────┼─────────────────────────┐
+         │ (Priority 100)          │ (Priority 50)           │ (Priority 10)
+         ▼                         ▼                         ▼
+   Django Backend            SvelteKit 5 SSR           Django Fallback
+   APIs, Admin, Media        Headless Frontend         Catch-all Router
+   /api/*, /e/api/*, /admin  (Node.js Port 3000)       (Legacy Template Mode)
+   (Daphne Port 8000)
+         │                         │
+         └────────────┬────────────┘
+                      │
+    ┌─────────────────┼─────────────────┐
+    │                 │                 │
+    ▼                 ▼                 ▼
+PostgreSQL 17      Redis 8.0         Celery 5.6
+Primary DB         Cache & Broker    Worker & Beat
+```
+
+---
+
+## 🚦 Traefik Routing & Dual-Router Rollback
+
+The production Traefik configuration implements three distinct priority routers to guarantee zero downtime and graceful rollbacks:
+
+1. **Backend High-Priority Router (Priority 100)**:
+   Routes all API endpoints, admin panels, static assets, and media directly to Django Daphne:
+   - API endpoints: `/api/*`, `/e/api/*`, `/posts/api/*`, `/pages/api/*`, `/account/api/*`
+   - Admin & operational portals: `/admin/*`, `/daddy/*`, `/billing/*`, `/analytics/*`, `/silk/*`
+   - System assets: `/static/*`, `/media/*`, `/health/*`, `robots.txt`, `sitemap*.xml`
+2. **Headless Frontend Router (Priority 50)**:
+   Routes all standard browser traffic to the SvelteKit Node.js SSR container on port 3000.
+3. **Django Fallback Router (Priority 10)**:
+   If the frontend container is stopped or scaled down during maintenance, Traefik immediately falls back to routing traffic to Django's built-in server-rendered templates without returning 502 Bad Gateway errors.
+
+---
+
+## 📦 Service Stack Inventory
+
+| Service | Image | Replicas | Role & Ports |
+| :--- | :--- | :--- | :--- |
+| **`traefik`** | `traefik:v3.6.12` | 1 | Edge reverse proxy, SSL termination (80, 443) |
+| **`frontend`** | `andreastuko/esc-frontend:latest` | 1 | Headless SvelteKit SSR application (3000 internal) |
+| **`web`** | `andreastuko/esc:latest` | 2 | Django ASGI Daphne application (8000 internal) |
+| **`migrator`** | `andreastuko/esc:latest` | 1 (one-shot) | Database migration runner (`migrate` on primary & analytics DBs) |
+| **`celery_worker`** | `andreastuko/esc:latest` | 1 | Asynchronous task processor (GeoIP, thumbnails, notifications) |
+| **`celery_beat`** | `andreastuko/esc:latest` | 1 | Periodic task scheduler (backups, subscriptions, cleanups) |
+| **`postgres`** | `postgres:17-alpine` | 1 | Primary relational database storage |
+| **`redis`** | `redis:8-alpine` | 1 | In-memory key-value cache and Celery message broker |
+| **`watchtower`** | `nickfedor/watchtower:1` | 1 | Automated image updates with rolling restarts |
+
+---
+
+## 💾 Storage & Backup Strategy
+
+### Cloudflare R2 Multi-Bucket Separation
+
+Static files and media assets are partitioned into distinct Cloudflare R2 buckets for strict permission scoping:
+
+- **Private Bucket (`CLOUDFLARE_R2_PRIVATE_BUCKET`)**: Stores sensitive escort ID cards and selfie verification files with restricted access.
+- **Static Bucket (`CLOUDFLARE_R2_PUBLIC_STATIC_BUCKET`)**: Serves immutable frontend and backend assets over a custom domain CDN.
+- **Media Bucket (`CLOUDFLARE_R2_PUBLIC_MEDIA_BUCKET`)**: Serves public escort gallery photographs and promotional videos.
+
+### Dual-Target Automated Database Backups
+
+The Celery Beat scheduler triggers regular database backups streaming compressed dumps across two independent targets:
+
+1. **Cloudflare R2**: Primary backup storage bucket.
+2. **Backblaze B2**: Independent cold backup destination for catastrophe redundancy.
+
+---
+
+## 🔒 SSL/TLS Management
+
+The platform supports two TLS certificate strategies:
+
+### 1. Cloudflare Origin CA (Default & Recommended)
+
+During deployment, the script automatically contacts the Cloudflare Origin CA API (`POST /certificates`) to generate high-security 15-year origin certificates. Traefik mounts these certificates dynamically from `./certs/` and reloads them without dropping active connections.
+
+Utility commands:
+
+```bash
+./ssl.sh status      # Inspect certificate expiration and active domain coverage
+./ssl.sh renew       # Force certificate regeneration via Cloudflare Origin API
+```
+
+### 2. Let's Encrypt ACME
+
+Traefik also supports automatic TLS issuance via Let's Encrypt HTTP-01 challenge if Cloudflare API keys are not provided.
+
+---
+
+## 🚀 Quick Deployment
+
+### Automated One-Command Deploy
+
+Run the automated deployment script on an Ubuntu or Debian host:
+
+```bash
+chmod +x deploy.sh
+./deploy.sh
+```
+
+The script autonomously handles:
+
+1. Validating operating system and sudo privileges.
+2. Removing any conflicting host web servers (e.g. host Nginx or Apache binding port 80).
+3. Installing Docker and Docker Compose if missing.
+4. Setting up persistent Fail2Ban SSH jail rules (3 retries leading to 30-day bans).
+5. Configuring Cloudflare Origin CA certificates or Let's Encrypt ACME.
+6. Syncing domain names and environment variables across `.env.docker`.
+7. Pulling images, executing schema migrations via `migrator`, and starting services.
+
+### Manual Launch
+
+```bash
+# 1. Prepare environment configuration
+cp .env.example .env.docker
+nano .env.docker
+
+# 2. Pull latest container images
+docker pull andreastuko/esc:latest
+docker pull andreastuko/esc-frontend:latest
+
+# 3. Start services in detached mode
+docker compose -f compose.prod.yaml up -d
+```
+
+---
+
+## ⚙️ Environment Configuration
+
+Key configuration parameters required in `.env.docker`:
 
 ```env
-SECRET_KEY=your-secret-key-here
-DEBUG=False
+# Domain & Edge Settings
+DOMAIN_NAME=yourdomain.com
 ENVIRONMENT=production
-ALLOWED_HOSTS=localhost,yourdomain.com
-CSRF_ORIGINS=https://yourdomain.com
+DEBUG=False
+SECRET_KEY=your-secure-django-secret-key
 
-POSTGRES_USER=user
-POSTGRES_PASSWORD=password
-POSTGRES_DB=dbname
+# Database & Cache
+POSTGRES_USER=esc_user
+POSTGRES_PASSWORD=your-postgres-password
+POSTGRES_DB=esc_db
+DATABASE_URL=postgresql://esc_user:your-postgres-password@postgres:5432/esc_db
+REDIS_URL=redis://redis:6379/0
 
-DATABASE_URL=postgresql://user:password@host:port/dbname
-ANALYTICS_DATABASE_URL=postgresql://user:password@host:port/analytics_db
+# Cloudflare Origin CA & Edge Tokens
+CLOUDFLARE_API_TOKEN=your-cloudflare-api-token
+CLOUDFLARE_ORIGIN_CA_KEY=your-origin-ca-user-key
 
-REDIS_URL=redis://redis:6379
-REDIS_HOST=redis
-REDIS_PASSWORD=
+# Cloudflare R2 Storage Buckets
+CLOUDFLARE_R2_PRIVATE_BUCKET=your-private-bucket
+CLOUDFLARE_R2_PRIVATE_ACCESS_KEY=your-private-key
+CLOUDFLARE_R2_PRIVATE_SECRET_KEY=your-private-secret
 
-SITE_ID=1
-SITE_NAME=Your Site Name
-SITE_URL=https://yourdomain.com
-BASE_URL=https://sandbox.safaricom.co.ke
-
-DEFAULT_FROM_EMAIL=noreply@yourdomain.com
-EMAIL_HOST=smtp.gmail.com
-EMAIL_HOST_USER=your-email@gmail.com
-EMAIL_HOST_PASSWORD=your-app-password
-EMAIL_PORT=587
-
-CLOUDFLARE_R2_PRIVATE_ACCESS_KEY=your-private-access-key
-CLOUDFLARE_R2_PRIVATE_SECRET_KEY=your-private-secret-key
-CLOUDFLARE_R2_PRIVATE_BUCKET=your-protected-bucket-name
-CLOUDFLARE_R2_PRIVATE_BUCKET_ENDPOINT=https://your-account-id.r2.cloudflarestorage.com
-CLOUDFLARE_R2_TOKEN_VALUE=your-token
-
-CLOUDFLARE_R2_PUBLIC_STATIC_ACCESS_KEY=your-static-access-key
-CLOUDFLARE_R2_PUBLIC_STATIC_SECRET_KEY=your-static-secret-key
-CLOUDFLARE_R2_PUBLIC_STATIC_BUCKET=your-static-bucket-name
-CLOUDFLARE_R2_PUBLIC_STATIC_BUCKET_ENDPOINT=https://your-account-id.r2.cloudflarestorage.com
+CLOUDFLARE_R2_PUBLIC_STATIC_BUCKET=your-static-bucket
 CLOUDFLARE_R2_PUBLIC_STATIC_CUSTOM_DOMAIN=static.yourdomain.com
 
-CLOUDFLARE_R2_PUBLIC_MEDIA_ACCESS_KEY=your-media-access-key
-CLOUDFLARE_R2_PUBLIC_MEDIA_SECRET_KEY=your-media-secret-key
-CLOUDFLARE_R2_PUBLIC_MEDIA_BUCKET=your-media-bucket-name
-CLOUDFLARE_R2_PUBLIC_MEDIA_BUCKET_ENDPOINT=https://your-account-id.r2.cloudflarestorage.com
+CLOUDFLARE_R2_PUBLIC_MEDIA_BUCKET=your-media-bucket
 CLOUDFLARE_R2_PUBLIC_MEDIA_CUSTOM_DOMAIN=media.yourdomain.com
 
+# Dual Backup Credentials
+BACKUP_R2_BUCKET_NAME=your-backup-bucket
 BACKUP_R2_ACCESS_KEY_ID=your-backup-access-key
 BACKUP_R2_SECRET_ACCESS_KEY=your-backup-secret-key
-BACKUP_R2_BUCKET_NAME=your-backup-bucket
-BACKUP_R2_ENDPOINT=https://your-account-id.r2.cloudflarestorage.com
-BACKUP_R2_ACCOUNT_ID=your-account-id
-BACKUP_R2_REGION=auto
-
-MPESA_CONSUMER_KEY=your-consumer-key
-MPESA_CONSUMER_SECRET=your-consumer-secret
-MPESA_PASSKEY=your-passkey
-MPESA_SHORTCODE=174379
-CALLBACK_URL=https://yourdomain.com/api/mpesa/callback
-
-GOOGLE_OAUTH_CLIENT_ID=your-client-id.apps.googleusercontent.com
-GOOGLE_OATH_CLIENT_ID=your-client-id.apps.googleusercontent.com
-GOOGLE_OAUTH_CLIENT_SECRET=your-client-secret
-
-GEOIP_LICENSE_KEY=your-maxmind-license-key
-
-RECAPTCHA_PUBLIC_KEY=your-recaptcha-site-key
-RECAPTCHA_PRIVATE_KEY=your-recaptcha-secret-key
-
-SENTRY_DSN=https://your-sentry-dsn@sentry.io/project-id
-POSTHOG_ENABLED=True
-POSTHOG_HOST=https://eu.i.posthog.com
-POSTHOG_API_KEY=your-posthog-project-api-key
-
-ADMIN_NAME=Admin Name
-ADMIN_EMAIL=admin@yourdomain.com
-ACME_EMAIL=admin@yourdomain.com
-
-PYTHON_VERSION=3.13.5
-UID=1000
-````
-
-## Production Deployment
-
-Pull the latest image:
-
-```bash
-docker pull andreastuko/esc:latest
 ```
 
-Start services:
+---
+
+## 📊 Operations & Monitoring
+
+### Container Status & Logs
 
 ```bash
-docker compose -f compose.prod.yaml up -d
-```
+# View active service statuses
+docker compose -f compose.prod.yaml ps
 
-Update production:
-
-```bash
-docker pull andreastuko/esc:latest
-docker compose -f compose.prod.yaml up -d
-```
-
-## Zero-Downtime Deployments
-
-- Web service uses internal port exposure instead of direct port mapping
-- Traefik handles routing and health checks
-- Old containers remain active until new ones are healthy
-- Start period allows full Django initialization
-
-## SSL Management (Cloudflare Origin CA)
-
-- **Automated Generation**: Certificates are issued via Cloudflare API (`POST /certificates`) during `deploy.sh`.
-- **Zero-Downtime Renewal**: Traefik automatically watches `./certs` and `traefik-dynamic.yaml` for instantaneous reloads without container restarts.
-- **Check Certificate Status**: `./ssl.sh status`
-- **Force Certificate Renewal**: `./ssl.sh renew`
-
-## Monitoring
-
-```bash
+# Stream unified logs
 docker compose -f compose.prod.yaml logs -f
+
+# Inspect specific service logs
+docker compose -f compose.prod.yaml logs -f frontend
 docker compose -f compose.prod.yaml logs -f web
 docker compose -f compose.prod.yaml logs -f celery_worker
-docker compose -f compose.prod.yaml logs -f celery_beat
-docker compose -f compose.prod.yaml ps
-docker compose -f compose.prod.yaml exec redis redis-cli ping
+docker compose -f compose.prod.yaml logs -f traefik
 ```
 
-## Local Development
+### Performing Database Migrations Manually
 
-Clone the repository:
+Migrations run automatically via the `migrator` service during startup. To run them on demand:
 
 ```bash
-git clone https://github.com/andreas-tuko/esc-compose-prod.git
-cd esc-compose-prod
+docker compose -f compose.prod.yaml run --rm migrator
 ```
 
-Create environment file:
+### Rolling Updates
+
+Watchtower automatically tracks registry updates for `andreastuko/esc:latest` and `andreastuko/esc-frontend:latest`. To update manually without downtime:
 
 ```bash
-cp .env.docker .env.local
+docker pull andreastuko/esc:latest
+docker pull andreastuko/esc-frontend:latest
+docker compose -f compose.prod.yaml up -d --no-deps web frontend
 ```
 
-Start local stack:
+---
 
-```bash
-docker compose -f compose.local.yaml up
-```
+## 🛡 Security Hardening
 
-Access the application:
-
-- [http://localhost:8000](http://localhost:8000)
-- [http://localhost:8000/admin](http://localhost:8000/admin)
-
-## Health Checks
-
-- Django readiness via `docker-health-check.py`
-- Redis ping checks
-- Celery worker inspection
-- Extended start period for migrations and static files
-
-## Security
-
-- Do not commit environment files
-- Rotate secrets regularly
-- Use strong passwords
-- Enable 2FA on external services
-- Keep Docker images updated
-
-## Backup Strategy
-
-- Automated database backups to Cloudflare R2
-- Media replication across R2 buckets
-- Retention configured in Django settings
+- **No Root Privileges**: Application containers execute as non-root unprivileged users.
+- **Fail2Ban Jail**: Custom SSH protection jail banning abusive IPs for 30 days after 3 failed attempts.
+- **iptables Block Survival**: Banned IPs persist across host server reboots.
+- **Traefik Security Headers**: HSTS enabled with `preload`, `nosniff`, `SAMEORIGIN`, and strict referrer policies.
+- **Rate Limiting**: Configured at reverse proxy edge (30 avg / 20 burst per minute).
