@@ -1,6 +1,6 @@
-# ESC Django Application - Production Deployment Guide
+# ESC Application: Production Deployment Guide
 
-Complete guide for deploying the ESC Django application on a VPS with Docker, Nginx, Cloudflare, and enterprise-grade security hardening.
+Complete guide for deploying the ESC platform on a VPS with Docker Compose, Traefik v3, SvelteKit frontend, Django Ninja backend, Cloudflare, and security hardening.
 
 ## Table of Contents
 
@@ -23,39 +23,45 @@ Complete guide for deploying the ESC Django application on a VPS with Docker, Ng
 
 ## Overview
 
-This deployment setup provides a **production-ready environment** for the ESC Django application with:
+This deployment setup provides a production-ready environment for the ESC platform with:
 
 - **Docker Compose** for container orchestration
-- **Nginx** as reverse proxy with Cloudflare-only enforcement
-- **Redis** for caching and message broker
-- **Celery** for async task processing
-- **Celery Beat** for scheduled tasks
-- **Cloudflare** for SSL, CDN, and DDoS protection
-- **🛡️ Fail2Ban** for enterprise-grade threat detection and response
-- **🔒 Multi-layer Rate Limiting** to prevent brute force and DoS attacks
-- **🚨 Vulnerability Scanner Detection** with automatic permanent bans
-- **⚡ SQL Injection/XSS Protection** with zero-tolerance policies
+- **Traefik v3** as reverse proxy with dual-router fallback and Cloudflare integration
+- **SvelteKit 5** headless frontend container for SSR and SEO
+- **Django 5.2 / Daphne** async backend API and admin service
+- **Migrator** dedicated service for zero-downtime database schema migrations
+- **Redis 8** for caching and Celery message broker
+- **PostgreSQL 17** primary and analytics database storage
+- **Celery & Celery Beat** for async background tasks and scheduled routines
+- **Cloudflare R2** split buckets for static assets, public media, and private verification files
+- **Fail2Ban** for SSH intrusion prevention
+- **Edge Rate Limiting & Security Headers** configured at the Traefik layer
 
 ## Architecture
 
 ```text
 Internet
-    ↓
-Cloudflare (SSL, CDN, DDoS Protection, WAF)
-    ↓
-Fail2Ban (Threat Detection & IP Banning)
-    ↓
-Nginx (Port 80/443, Cloudflare-only enforcement, Rate Limiting)
-    ↓
-Django App (Port 8000)
-    ↓
-┌───────┴──────────────┐
-↓                      ↓
-Celery Worker      Celery Beat
-↓                      ↓
-└───────┬──────────────┘
-        ↓
-    Redis (Cache/Broker)
+    │
+    ▼
+Cloudflare Edge (SSL, CDN, DDoS Protection, WAF)
+    │
+    ▼
+Traefik v3.6.12 Reverse Proxy (Port 80/443, SSL termination, Rate Limiting)
+    │
+    ├─────────────────────────────┬─────────────────────────────┐
+    ▼                             ▼                             ▼
+Django APIs / Admin           SvelteKit Frontend            Django Fallback
+(Priority 100, Port 8000)     (Priority 50, Port 3000)      (Priority 10, Port 8000)
+    │                             │
+    └──────────────┬──────────────┘
+                   │
+    ┌──────────────┴──────────────┐
+    ▼                             ▼
+PostgreSQL 17 Primary DB      Redis 8 Cache & Broker
+    │                             │
+    │                      ┌──────┴──────┐
+    ▼                      ▼             ▼
+Analytics DB          Celery Worker  Celery Beat
 ```
 
 ## Prerequisites
