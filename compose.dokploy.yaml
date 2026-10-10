@@ -1,0 +1,280 @@
+# compose.dokploy.yaml
+# Dokploy Production Stack for ESC (Django + SvelteKit + Celery + Redis + Postgres)
+
+services:
+
+  # ─── Database ─────────────────────────────────────────────────────────────
+  postgres:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    env_file:
+      - .env
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+      PGUSER: ${POSTGRES_USER}
+    healthcheck:
+      test: ["CMD-SHELL", "psql -U $$POSTGRES_USER -d $$POSTGRES_DB -c 'SELECT 1' || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+    security_opt:
+      - no-new-privileges:true
+    networks:
+      - internal-net
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 512M
+        reservations:
+          cpus: "0.1"
+          memory: 256M
+
+  # ─── Cache & Celery Broker ────────────────────────────────────────────────
+  redis:
+    image: redis:8-alpine
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 5s
+    security_opt:
+      - no-new-privileges:true
+    networks:
+      - internal-net
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 256M
+        reservations:
+          cpus: "0.05"
+          memory: 128M
+
+  # ─── Database Migrator (Runs before web service) ──────────────────────────
+  migrator:
+    image: ${DOCKER_IMAGE_BACKEND:-andreastuko/esc:latest}
+    command: >
+      bash -c "python manage.py migrate && python manage.py migrate --database=analytics"
+    env_file:
+      - .env
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+    networks:
+      - internal-net
+
+  # ─── Django ASGI / Daphne Backend ─────────────────────────────────────────
+  web:
+    image: ${DOCKER_IMAGE_BACKEND:-andreastuko/esc:latest}
+    restart: unless-stopped
+    env_file:
+      - .env
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      migrator:
+        condition: service_completed_successfully
+    command: ["./build.sh"]
+    expose:
+      - "8000"
+    volumes:
+      - geoip_data:/app/geoip
+    healthcheck:
+      test: ["CMD", "python3", "./docker-health-check.py"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 120s
+      start_interval: 5s
+    security_opt:
+      - no-new-privileges:true
+    networks:
+      - dokploy-network
+      - internal-net
+    labels:
+      - "traefik.enable=true"
+      - "traefik.docker.network=dokploy-network"
+
+      # High-Priority Backend Router (Priority 100: APIs, Admin, Media, Static, Sitemaps)
+      - "traefik.http.routers.django-backend.rule=(Host(`${DOMAIN_NAME}`) || Host(`www.${DOMAIN_NAME}`)) && (PathPrefix(`/api`) || PathPrefix(`/e/api`) || PathPrefix(`/posts/api`) || PathPrefix(`/pages/api`) || PathPrefix(`/account/api`) || PathPrefix(`/_allauth`) || PathPrefix(`/daddy`) || PathPrefix(`/admin`) || PathRegexp(`admin-dashboard`) || PathRegexp(`sitemap.*\\.xml$$`) || Path(`/robots.txt`) || Path(`/e/robots.txt`) || PathPrefix(`/static`) || PathPrefix(`/media`) || PathPrefix(`/health`) || PathPrefix(`/silk`) || PathPrefix(`/tinymce`) || PathPrefix(`/billing`) || PathPrefix(`/analytics`) || PathPrefix(`/files`) || PathPrefix(`/e/verification`) || PathPrefix(`/account/google`) || PathPrefix(`/account/gallery`) || PathPrefix(`/account/videos`) || PathPrefix(`/account/escort-registration`) || PathPrefix(`/account/escort-reviews`))"
+      - "traefik.http.routers.django-backend.priority=100"
+      - "traefik.http.routers.django-backend.entrypoints=websecure"
+      - "traefik.http.routers.django-backend.tls=true"
+      - "traefik.http.routers.django-backend.service=django-service"
+      - "traefik.http.routers.django-backend.middlewares=sec-headers,rate-limit"
+
+      # Fallback Router (Priority 10: Rollback / Django SSR Template Fallback)
+      - "traefik.http.routers.django-fallback.rule=Host(`${DOMAIN_NAME}`) || Host(`www.${DOMAIN_NAME}`)"
+      - "traefik.http.routers.django-fallback.priority=10"
+      - "traefik.http.routers.django-fallback.entrypoints=websecure"
+      - "traefik.http.routers.django-fallback.tls=true"
+      - "traefik.http.routers.django-fallback.service=django-service"
+      - "traefik.http.routers.django-fallback.middlewares=sec-headers,rate-limit"
+
+      # Service Definition & Load Balancer Settings
+      - "traefik.http.services.django-service.loadbalancer.server.port=8000"
+      - "traefik.http.services.django-service.loadbalancer.healthcheck.path=/health/ready/"
+      - "traefik.http.services.django-service.loadbalancer.healthcheck.hostname=localhost"
+      - "traefik.http.services.django-service.loadbalancer.healthcheck.interval=5s"
+      - "traefik.http.services.django-service.loadbalancer.healthcheck.timeout=3s"
+
+      # Security & Rate Limiting Middlewares
+      - "traefik.http.middlewares.sec-headers.headers.customFrameOptionsValue=SAMEORIGIN"
+      - "traefik.http.middlewares.sec-headers.headers.contentTypeNosniff=true"
+      - "traefik.http.middlewares.sec-headers.headers.browserXssFilter=true"
+      - "traefik.http.middlewares.sec-headers.headers.referrerPolicy=strict-origin-when-cross-origin"
+      - "traefik.http.middlewares.sec-headers.headers.stsSeconds=31536000"
+      - "traefik.http.middlewares.sec-headers.headers.stsIncludeSubdomains=true"
+      - "traefik.http.middlewares.rate-limit.ratelimit.average=30"
+      - "traefik.http.middlewares.rate-limit.ratelimit.burst=20"
+      - "traefik.http.middlewares.rate-limit.ratelimit.period=1m"
+    deploy:
+      replicas: 2
+      resources:
+        limits:
+          cpus: "0.8"
+          memory: 384M
+        reservations:
+          cpus: "0.15"
+          memory: 192M
+
+  # ─── SvelteKit 5 SSR Frontend ─────────────────────────────────────────────
+  frontend:
+    image: ${DOCKER_IMAGE_FRONTEND:-andreastuko/esc-frontend:latest}
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      NODE_ENV: production
+      PORT: 3000
+      HOST: 0.0.0.0
+      ORIGIN: https://${DOMAIN_NAME}
+      PUBLIC_API_BASE_URL: https://${DOMAIN_NAME}
+      INTERNAL_API_URL: http://web:8000
+    expose:
+      - "3000"
+    depends_on:
+      web:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget --no-verbose --tries=1 --spider http://127.0.0.1:3000/ || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    security_opt:
+      - no-new-privileges:true
+    networks:
+      - dokploy-network
+      - internal-net
+    labels:
+      - "traefik.enable=true"
+      - "traefik.docker.network=dokploy-network"
+      # SvelteKit Frontend Router (Priority 50: Catches all standard user frontend traffic)
+      - "traefik.http.routers.frontend-router.rule=Host(`${DOMAIN_NAME}`) || Host(`www.${DOMAIN_NAME}`)"
+      - "traefik.http.routers.frontend-router.priority=50"
+      - "traefik.http.routers.frontend-router.entrypoints=websecure"
+      - "traefik.http.routers.frontend-router.tls=true"
+      - "traefik.http.routers.frontend-router.service=frontend-service"
+      - "traefik.http.routers.frontend-router.middlewares=sec-headers"
+      - "traefik.http.services.frontend-service.loadbalancer.server.port=3000"
+    deploy:
+      resources:
+        limits:
+          cpus: "0.8"
+          memory: 512M
+        reservations:
+          cpus: "0.1"
+          memory: 128M
+
+  # ─── Celery Background Worker ─────────────────────────────────────────────
+  celery_worker:
+    image: ${DOCKER_IMAGE_BACKEND:-andreastuko/esc:latest}
+    restart: unless-stopped
+    command: >
+      celery -A esc worker
+      --loglevel=info
+      --concurrency=2
+      --prefetch-multiplier=1
+      --max-tasks-per-child=100
+      --max-memory-per-child=200000
+    env_file:
+      - .env
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      migrator:
+        condition: service_completed_successfully
+    volumes:
+      - geoip_data:/app/geoip
+    security_opt:
+      - no-new-privileges:true
+    networks:
+      - internal-net
+    deploy:
+      resources:
+        limits:
+          cpus: "0.8"
+          memory: 384M
+        reservations:
+          cpus: "0.15"
+          memory: 192M
+
+  # ─── Celery Beat Scheduler ────────────────────────────────────────────────
+  celery_beat:
+    image: ${DOCKER_IMAGE_BACKEND:-andreastuko/esc:latest}
+    restart: unless-stopped
+    command: celery -A esc beat -l info --scheduler django_celery_beat.schedulers:DatabaseScheduler --schedule /tmp/celerybeat-schedule --pidfile /tmp/celerybeat.pid
+    env_file:
+      - .env
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      migrator:
+        condition: service_completed_successfully
+    volumes:
+      - geoip_data:/app/geoip
+    security_opt:
+      - no-new-privileges:true
+    networks:
+      - internal-net
+    deploy:
+      resources:
+        limits:
+          cpus: "0.2"
+          memory: 128M
+        reservations:
+          cpus: "0.05"
+          memory: 64M
+
+# ─── Volumes & Networks ─────────────────────────────────────────────────────
+volumes:
+  postgres_data:
+  redis_data:
+  geoip_data:
+
+networks:
+  # Internal network for private inter-service communication
+  internal-net:
+    driver: bridge
+  # External network managed by Dokploy for Traefik routing
+  dokploy-network:
+    external: true
