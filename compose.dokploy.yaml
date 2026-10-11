@@ -64,6 +64,7 @@ services:
   # ─── Database Migrator (Runs before web service) ──────────────────────────
   migrator:
     image: ${DOCKER_IMAGE_BACKEND:-andreastuko/esc:latest}
+    pull_policy: always
     command: >
       bash -c "python manage.py migrate && python manage.py migrate --database=analytics"
     env_file:
@@ -78,6 +79,7 @@ services:
   # ─── Django ASGI / Daphne Backend ─────────────────────────────────────────
   web:
     image: ${DOCKER_IMAGE_BACKEND:-andreastuko/esc:latest}
+    pull_policy: always
     restart: unless-stopped
     env_file:
       - .env
@@ -155,6 +157,7 @@ services:
   # ─── SvelteKit 5 SSR Frontend ─────────────────────────────────────────────
   frontend:
     image: ${DOCKER_IMAGE_FRONTEND:-andreastuko/esc-frontend:latest}
+    pull_policy: always
     restart: unless-stopped
     env_file:
       - .env
@@ -204,6 +207,7 @@ services:
   # ─── Celery Background Worker ─────────────────────────────────────────────
   celery_worker:
     image: ${DOCKER_IMAGE_BACKEND:-andreastuko/esc:latest}
+    pull_policy: always
     restart: unless-stopped
     command: >
       celery -A esc worker
@@ -239,6 +243,7 @@ services:
   # ─── Celery Beat Scheduler ────────────────────────────────────────────────
   celery_beat:
     image: ${DOCKER_IMAGE_BACKEND:-andreastuko/esc:latest}
+    pull_policy: always
     restart: unless-stopped
     command: celery -A esc beat -l info --scheduler django_celery_beat.schedulers:DatabaseScheduler --schedule /tmp/celerybeat-schedule --pidfile /tmp/celerybeat.pid
     env_file:
