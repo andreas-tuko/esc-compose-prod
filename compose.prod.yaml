@@ -78,7 +78,7 @@ services:
           memory: 128M
 
   migrator:
-    image: andreastuko/esc:latest
+    image: ${DOCKER_IMAGE_BACKEND:-andreastuko/esc:latest}
     command: >
       bash -c "python manage.py migrate && python manage.py migrate --database=analytics"
     env_file:
@@ -90,7 +90,7 @@ services:
 
 
   web:
-    image: andreastuko/esc:latest
+    image: ${DOCKER_IMAGE_BACKEND:-andreastuko/esc:latest}
     restart: unless-stopped
     env_file:
       - .env.docker
@@ -165,7 +165,7 @@ services:
           memory: 192M
 
   frontend:
-    image: andreastuko/esc-frontend:latest
+    image: ${DOCKER_IMAGE_FRONTEND:-andreastuko/esc-frontend:latest}
     restart: unless-stopped
     env_file:
       - .env.docker
@@ -262,7 +262,7 @@ services:
           memory: 64M
 
   celery_worker:
-      image: andreastuko/esc:latest
+      image: ${DOCKER_IMAGE_BACKEND:-andreastuko/esc:latest}
       restart: unless-stopped
       command: >
         celery -A esc worker
@@ -278,6 +278,8 @@ services:
           condition: service_healthy
         postgres:
           condition: service_healthy
+        migrator:
+          condition: service_completed_successfully 
       volumes:
         - geoip:/app/geoip 
       security_opt:
@@ -294,16 +296,18 @@ services:
             memory: 192M
 
   celery_beat:
-    image: andreastuko/esc:latest
+    image: ${DOCKER_IMAGE_BACKEND:-andreastuko/esc:latest}
     restart: unless-stopped
-    command: celery -A esc beat -l info --pidfile=
+    command: celery -A esc beat -l info --scheduler django_celery_beat.schedulers:DatabaseScheduler --schedule /tmp/celerybeat-schedule --pidfile /tmp/celerybeat.pid
     env_file:
       - .env.docker
     depends_on:
       redis:
         condition: service_healthy
       postgres:
-        condition: service_healthy        
+        condition: service_healthy
+      migrator:
+        condition: service_completed_successfully 
     volumes:
       - geoip:/app/geoip
     security_opt:
