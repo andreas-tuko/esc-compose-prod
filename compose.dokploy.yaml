@@ -1,5 +1,11 @@
 # compose.dokploy.yaml
 # Dokploy Production Stack for ESC (Django + SvelteKit + Celery + Redis + Postgres)
+#
+# Memory defaults below are tuned for a 2.5 GB host.
+# On a larger host, override in .env (see bottom of this file for the list):
+#   WEB_REPLICAS=2
+#   WEB_MEM_LIMIT=512M
+#   etc.
 
 services:
 
@@ -29,17 +35,21 @@ services:
     deploy:
       resources:
         limits:
-          cpus: "1.0"
-          memory: 512M
+          cpus: "${POSTGRES_CPU_LIMIT:-1.0}"
+          memory: ${POSTGRES_MEM_LIMIT:-320M}
         reservations:
-          cpus: "0.1"
-          memory: 256M
+          cpus: "${POSTGRES_CPU_RESERVATION:-0.1}"
+          memory: ${POSTGRES_MEM_RESERVATION:-160M}
 
   # ─── Cache & Celery Broker ────────────────────────────────────────────────
   redis:
     image: redis:8-alpine
     restart: unless-stopped
-    command: ["redis-server", "--appendonly", "yes"]
+    command: >
+      redis-server
+      --appendonly yes
+      --maxmemory ${REDIS_MAXMEMORY:-160mb}
+      --maxmemory-policy noeviction
     volumes:
       - redis_data:/data
     healthcheck:
@@ -55,11 +65,11 @@ services:
     deploy:
       resources:
         limits:
-          cpus: "0.5"
-          memory: 256M
+          cpus: "${REDIS_CPU_LIMIT:-0.5}"
+          memory: ${REDIS_MEM_LIMIT:-192M}
         reservations:
-          cpus: "0.05"
-          memory: 128M
+          cpus: "${REDIS_CPU_RESERVATION:-0.05}"
+          memory: ${REDIS_MEM_RESERVATION:-64M}
 
   # ─── Database Migrator (Runs before web service) ──────────────────────────
   migrator:
@@ -75,6 +85,14 @@ services:
     restart: "no"
     networks:
       - internal-net
+    deploy:
+      resources:
+        limits:
+          cpus: "${MIGRATOR_CPU_LIMIT:-0.5}"
+          memory: ${MIGRATOR_MEM_LIMIT:-320M}
+        reservations:
+          cpus: "${MIGRATOR_CPU_RESERVATION:-0.05}"
+          memory: ${MIGRATOR_MEM_RESERVATION:-128M}
 
   # ─── Django ASGI / Daphne Backend ─────────────────────────────────────────
   web:
@@ -145,14 +163,14 @@ services:
       - "traefik.http.middlewares.rate-limit.ratelimit.burst=20"
       - "traefik.http.middlewares.rate-limit.ratelimit.period=1m"
     deploy:
-      replicas: 2
+      replicas: ${WEB_REPLICAS:-2}
       resources:
         limits:
-          cpus: "0.8"
-          memory: 384M
+          cpus: "${WEB_CPU_LIMIT:-0.8}"
+          memory: ${WEB_MEM_LIMIT:-384M}
         reservations:
-          cpus: "0.15"
-          memory: 192M
+          cpus: "${WEB_CPU_RESERVATION:-0.15}"
+          memory: ${WEB_MEM_RESERVATION:-160M}
 
   # ─── SvelteKit 5 SSR Frontend ─────────────────────────────────────────────
   frontend:
@@ -198,11 +216,11 @@ services:
     deploy:
       resources:
         limits:
-          cpus: "0.8"
-          memory: 512M
+          cpus: "${FRONTEND_CPU_LIMIT:-0.5}"
+          memory: ${FRONTEND_MEM_LIMIT:-256M}
         reservations:
-          cpus: "0.1"
-          memory: 128M
+          cpus: "${FRONTEND_CPU_RESERVATION:-0.1}"
+          memory: ${FRONTEND_MEM_RESERVATION:-96M}
 
   # ─── Celery Background Worker ─────────────────────────────────────────────
   celery_worker:
@@ -234,18 +252,18 @@ services:
     deploy:
       resources:
         limits:
-          cpus: "0.8"
-          memory: 384M
+          cpus: "${CELERY_WORKER_CPU_LIMIT:-0.8}"
+          memory: ${CELERY_WORKER_MEM_LIMIT:-320M}
         reservations:
-          cpus: "0.15"
-          memory: 192M
+          cpus: "${CELERY_WORKER_CPU_RESERVATION:-0.15}"
+          memory: ${CELERY_WORKER_MEM_RESERVATION:-128M}
 
   # ─── Celery Beat Scheduler ────────────────────────────────────────────────
   celery_beat:
     image: ${DOCKER_IMAGE_BACKEND:-andreastuko/esc:latest}
     pull_policy: always
     restart: unless-stopped
-    command: celery -A esc beat -l info --scheduler django_celery_beat.schedulers:DatabaseScheduler --schedule /tmp/celerybeat-schedule --pidfile /tmp/celerybeat.pid
+    command: celery -A esc beat -l info --pidfile=
     env_file:
       - .env
     depends_on:
@@ -264,11 +282,11 @@ services:
     deploy:
       resources:
         limits:
-          cpus: "0.2"
-          memory: 128M
+          cpus: "${CELERY_BEAT_CPU_LIMIT:-0.3}"
+          memory: ${CELERY_BEAT_MEM_LIMIT:-320M}
         reservations:
-          cpus: "0.05"
-          memory: 64M
+          cpus: "${CELERY_BEAT_CPU_RESERVATION:-0.05}"
+          memory: ${CELERY_BEAT_MEM_RESERVATION:-128M}
 
 # ─── Volumes & Networks ─────────────────────────────────────────────────────
 volumes:
@@ -283,3 +301,4 @@ networks:
   # External network managed by Dokploy for Traefik routing
   dokploy-network:
     external: true
+    
