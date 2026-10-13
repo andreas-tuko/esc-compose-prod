@@ -149,7 +149,7 @@ services:
       - "traefik.http.services.django-service.loadbalancer.server.port=8000"
       - "traefik.http.services.django-service.loadbalancer.healthcheck.path=/health/ready/"
       - "traefik.http.services.django-service.loadbalancer.healthcheck.hostname=localhost"
-      - "traefik.http.services.django-service.loadbalancer.healthcheck.interval=5s"
+      - "traefik.http.services.django-service.loadbalancer.healthcheck.interval=15s"
       - "traefik.http.services.django-service.loadbalancer.healthcheck.timeout=3s"
 
       # Security & Rate Limiting Middlewares
@@ -192,7 +192,7 @@ services:
       web:
         condition: service_healthy
     healthcheck:
-      test: ["CMD-SHELL", "wget --no-verbose --tries=1 --spider http://127.0.0.1:3000/ || exit 1"]
+      test: ["CMD-SHELL", "wget --no-verbose --tries=1 --spider http://127.0.0.1:3000/up || exit 1"]
       interval: 15s
       timeout: 5s
       retries: 3
