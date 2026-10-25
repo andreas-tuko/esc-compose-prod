@@ -527,7 +527,7 @@ DOMAIN_NAME=$DOMAIN_NAME
 SECRET_KEY=$GENERATED_SECRET_KEY
 DEBUG=False
 ENVIRONMENT=production
-ALLOWED_HOSTS=localhost,$DOMAIN_NAME,www.$DOMAIN_NAME
+ALLOWED_HOSTS=localhost,web,$DOMAIN_NAME,www.$DOMAIN_NAME
 # https:// is required — Cloudflare terminates TLS so the browser always
 # sends HTTPS Origin/Referer headers. Using http:// here causes CSRF failures.
 CSRF_ORIGINS=https://$DOMAIN_NAME,https://www.$DOMAIN_NAME
