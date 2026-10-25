@@ -93,7 +93,9 @@ services:
         reservations:
           cpus: "${MIGRATOR_CPU_RESERVATION:-0.05}"
           memory: ${MIGRATOR_MEM_RESERVATION:-128M}
-
+    labels:
+      - "com.centurylinklabs.watchtower.enable=true"
+      
   # ─── Django ASGI / Daphne Backend ─────────────────────────────────────────
   web:
     image: ${DOCKER_IMAGE_BACKEND:-andreastuko/esc:latest}
