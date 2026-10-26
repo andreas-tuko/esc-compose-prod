@@ -10,26 +10,33 @@ Guide for running and maintaining your ESC deployment on a daily basis.
 # Navigation
 cd /opt/apps/esc
 
-# View status
-./status.sh              # Service & resource status
-./security.sh            # Security dashboard (Fail2Ban)
+# View container status
+docker compose -f compose.prod.yaml ps
+# Or for Dokploy:
+docker compose -f compose.dokploy.yaml ps
 
-# View logs
-./logs.sh                # All services
-./logs.sh web            # Just Django app
-./logs.sh celery_worker  # Just Celery
+# Stream unified logs
+docker compose -f compose.prod.yaml logs -f
+# Or for Dokploy:
+docker compose -f compose.dokploy.yaml logs -f
 
-# Manage services
-./start.sh               # Start all services
-./stop.sh                # Stop all services
-./deploy.sh              # Update and restart
+# Specific service logs
+docker compose -f compose.prod.yaml logs -f frontend
+docker compose -f compose.prod.yaml logs -f web
+docker compose -f compose.prod.yaml logs -f celery_worker
+docker compose -f compose.prod.yaml logs -f migrator
+docker compose -f compose.prod.yaml logs -f traefik
 
-# Configure
-./reconfig.sh            # Edit environment variables
+# Resource monitoring
+docker stats --no-stream
 
-# Security
-/opt/bin/f2b-dashboard.sh    # Security dashboard
-/opt/bin/f2b-unban.sh <IP>   # Unban IP
+# Run database migrations on-demand
+docker compose -f compose.prod.yaml run --rm migrator
+
+# Restart services
+docker compose -f compose.prod.yaml restart web frontend
+# Or for Dokploy:
+docker compose -f compose.dokploy.yaml restart web frontend
 ```
 
 ## Daily Operations
@@ -53,6 +60,7 @@ cd /opt/apps/esc
 ```
 
 **Expected output:**
+
 - ✅ All containers show "running"
 - ✅ No ERROR logs in past 12 hours
 - ✅ Fail2Ban shows 0-50 bans depending on traffic
@@ -477,6 +485,7 @@ docker compose -f compose.prod.yaml exec redis redis-cli BGSAVE
 **Cause**: Django app not responding
 
 **Solution**:
+
 ```bash
 ./logs.sh web          # Check for errors
 ./deploy.sh            # Restart
@@ -487,11 +496,13 @@ docker compose -f compose.prod.yaml exec redis redis-cli BGSAVE
 **Cause**: Rate limit exceeded (intentional)
 
 **Check if legitimate**:
+
 ```bash
 tail -n 50 /var/log/nginx/esc_access.log | grep 429
 ```
 
-**If legitimate user**: 
+**If legitimate user**:
+
 ```bash
 /opt/bin/f2b-unban.sh <IP>
 ```
@@ -499,6 +510,7 @@ tail -n 50 /var/log/nginx/esc_access.log | grep 429
 ### Celery Tasks Not Running
 
 **Solution**:
+
 ```bash
 ./logs.sh celery_worker     # Check for errors
 docker compose -f compose.prod.yaml restart celery_worker celery_beat
@@ -508,12 +520,14 @@ redis-cli ping              # Verify Redis
 ### SSL Certificate Expired
 
 **For Let's Encrypt**:
+
 ```bash
 sudo certbot renew --force-renewal
 sudo systemctl reload nginx
 ```
 
 **For Self-signed**:
+
 ```bash
 sudo ./scripts/renew-selfsigned.sh  # Or create new
 sudo systemctl reload nginx
@@ -524,7 +538,7 @@ sudo systemctl reload nginx
 ### Key Files to Know
 
 | File | Purpose | Edit? |
-|------|---------|-------|
+| ------ | --------- | ------- |
 | `/opt/apps/esc/.env.docker` | Environment config | ✅ Frequently |
 | `/opt/apps/esc/compose.prod.yaml` | Docker Compose | ✅ For scaling |
 | `/etc/nginx/sites-available/esc` | Nginx config | ⚠️ With care |
@@ -554,7 +568,7 @@ For issues you can't resolve:
 
 1. Check `/opt/apps/esc/docs/TROUBLESHOOTING.md`
 2. Review `/opt/apps/esc/docs/SECURITY.md` for security issues
-3. Check GitHub issues: https://github.com/andreas-tuko/esc-compose-prod
+3. Check GitHub issues: <https://github.com/andreas-tuko/esc-compose-prod>
 4. Reach out to the development team
 
 ---

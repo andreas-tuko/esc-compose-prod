@@ -87,6 +87,9 @@ services:
       postgres:
         condition: service_healthy
     restart: "no"
+    labels:
+      - "com.centurylinklabs.watchtower.enable=true"
+
 
 
   web:

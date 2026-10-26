@@ -125,9 +125,79 @@ Traefik also supports automatic TLS issuance via Let's Encrypt HTTP-01 challenge
 
 ---
 
-## 🚀 Quick Deployment
+## 🚀 Deployment Topologies
 
-### Automated One-Command Deploy
+The repository provides two production deployment profiles:
+
+### Topology A: Standalone Docker Compose (`compose.prod.yaml`)
+
+Recommended for standalone VPS deployments managed directly via SSH or continuous deployment scripts:
+
+```bash
+# 1. Prepare environment configuration
+cp .env.example .env.docker
+nano .env.docker
+
+# 2. Pull latest container images
+docker compose -f compose.prod.yaml pull
+
+# 3. Start services in detached mode
+docker compose -f compose.prod.yaml up -d
+```
+
+### Topology B: Dokploy PaaS Stack (`compose.dokploy.yaml`)
+
+Pre-tuned for single-node deployments inside Dokploy on budget VPS instances (e.g. 2.5GB RAM):
+
+- **Memory Limits & Reservations**: Bounded memory limits prevent out-of-memory kernel kills under burst traffic.
+- **Watchtower Migration Updates**: The `migrator` service carries `com.centurylinklabs.watchtower.enable=true` and `pull_policy: always` to run database migrations automatically when a new backend image is deployed.
+- **SSL-Bypassing Health Checks**: Traefik probes `django-service` at `/health/ready/` with `hostname=localhost` to prevent HTTPS redirect infinite loops.
+
+Deploy within Dokploy Compose interface or via CLI:
+
+```bash
+docker compose -f compose.dokploy.yaml pull
+docker compose -f compose.dokploy.yaml up -d
+```
+
+---
+
+## 💾 Low-Memory Host Tuning (2.5 GB VPS vs 6 GB+ VPS)
+
+Resource limits are fully configurable via `.env.docker`. Set these according to your host capacity:
+
+```env
+# ── Defaults for 2.5 GB Host ───────────────────────────────────
+WEB_REPLICAS=2
+POSTGRES_MEM_LIMIT=320M
+REDIS_MEM_LIMIT=192M
+REDIS_MAXMEMORY=160mb
+MIGRATOR_MEM_LIMIT=320M
+WEB_MEM_LIMIT=384M
+FRONTEND_MEM_LIMIT=256M
+CELERY_WORKER_MEM_LIMIT=320M
+CELERY_BEAT_MEM_LIMIT=320M
+
+# ── Recommended for 6 GB+ Host (Uncomment to apply) ─────────────
+# WEB_REPLICAS=2
+# POSTGRES_MEM_LIMIT=512M
+# POSTGRES_MEM_RESERVATION=256M
+# REDIS_MEM_LIMIT=256M
+# REDIS_MAXMEMORY=192mb
+# MIGRATOR_MEM_LIMIT=512M
+# WEB_MEM_LIMIT=512M
+# WEB_MEM_RESERVATION=192M
+# FRONTEND_MEM_LIMIT=512M
+# FRONTEND_MEM_RESERVATION=128M
+# CELERY_WORKER_MEM_LIMIT=512M
+# CELERY_WORKER_MEM_RESERVATION=192M
+# CELERY_BEAT_MEM_LIMIT=384M
+# CELERY_BEAT_MEM_RESERVATION=128M
+```
+
+---
+
+## 🚀 Automated Deployment Script (`deploy.sh`)
 
 Run the automated deployment script on an Ubuntu or Debian host:
 
@@ -146,21 +216,6 @@ The script autonomously handles:
 6. Syncing domain names and environment variables across `.env.docker`.
 7. Pulling images, executing schema migrations via `migrator`, and starting services.
 
-### Manual Launch
-
-```bash
-# 1. Prepare environment configuration
-cp .env.example .env.docker
-nano .env.docker
-
-# 2. Pull latest container images
-docker pull andreastuko/esc:latest
-docker pull andreastuko/esc-frontend:latest
-
-# 3. Start services in detached mode
-docker compose -f compose.prod.yaml up -d
-```
-
 ---
 
 ## ⚙️ Environment Configuration
@@ -173,13 +228,33 @@ DOMAIN_NAME=yourdomain.com
 ENVIRONMENT=production
 DEBUG=False
 SECRET_KEY=your-secure-django-secret-key
+ALLOWED_HOSTS=localhost,web,yourdomain.com,www.yourdomain.com
+CSRF_ORIGINS=https://yourdomain.com,https://www.yourdomain.com
+
+# Reverse Proxy & Security Tokens
+TRUSTED_PROXY_IPS=127.0.0.1,10.0.0.0/8
+TRUST_CF_CONNECTING_IP=true
+MPESA_CALLBACK_SECRET=your-secure-callback-token
+MPESA_CALLBACK_IP_ALLOWLIST=196.201.214.200,196.201.214.206
 
 # Database & Cache
 POSTGRES_USER=esc_user
 POSTGRES_PASSWORD=your-postgres-password
 POSTGRES_DB=esc_db
 DATABASE_URL=postgresql://esc_user:your-postgres-password@postgres:5432/esc_db
+ANALYTICS_DATABASE_URL=postgresql://esc_user:your-postgres-password@postgres:5432/analytics_db
 REDIS_URL=redis://redis:6379/0
+
+# Dokploy Host Resource Defaults (Tuned for 2.5 GB VPS)
+WEB_REPLICAS=2
+POSTGRES_MEM_LIMIT=320M
+REDIS_MEM_LIMIT=192M
+REDIS_MAXMEMORY=160mb
+MIGRATOR_MEM_LIMIT=320M
+WEB_MEM_LIMIT=384M
+FRONTEND_MEM_LIMIT=256M
+CELERY_WORKER_MEM_LIMIT=320M
+CELERY_BEAT_MEM_LIMIT=320M
 
 # Cloudflare Origin CA & Edge Tokens
 CLOUDFLARE_API_TOKEN=your-cloudflare-api-token
@@ -209,11 +284,13 @@ BACKUP_R2_SECRET_ACCESS_KEY=your-backup-secret-key
 ### Container Status & Logs
 
 ```bash
-# View active service statuses
+# View active service statuses (Compose / Dokploy)
 docker compose -f compose.prod.yaml ps
+docker compose -f compose.dokploy.yaml ps
 
 # Stream unified logs
 docker compose -f compose.prod.yaml logs -f
+docker compose -f compose.dokploy.yaml logs -f
 
 # Inspect specific service logs
 docker compose -f compose.prod.yaml logs -f frontend
