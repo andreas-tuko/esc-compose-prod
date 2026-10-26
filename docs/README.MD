@@ -25,11 +25,12 @@ Complete guide for deploying the ESC platform on a VPS with Docker Compose, Trae
 
 This deployment setup provides a production-ready environment for the ESC platform with:
 
-- **Docker Compose** for container orchestration
+- **Docker Compose & Dokploy Support**: Production compose configurations for standalone servers (`compose.prod.yaml`) and Dokploy PaaS stacks (`compose.dokploy.yaml`).
+- **Low-Memory Host Optimization**: Pre-configured resource constraints and reservations tuned for budget 2.5GB RAM VPS hosting.
 - **Traefik v3** as reverse proxy with dual-router fallback and Cloudflare integration
 - **SvelteKit 5** headless frontend container for SSR and SEO
 - **Django 5.2 / Daphne** async backend API and admin service
-- **Migrator** dedicated service for zero-downtime database schema migrations
+- **Migrator** dedicated service for zero-downtime database schema migrations with automated Watchtower update support
 - **Redis 8** for caching and Celery message broker
 - **PostgreSQL 17** primary and analytics database storage
 - **Celery & Celery Beat** for async background tasks and scheduled routines
